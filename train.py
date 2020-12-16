@@ -115,6 +115,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                     'model': model.module.state_dict(),
                     'optimizer': optimizer.state_dict()}, chkpt_file)
         gc.collect()
+        # chkpt_file = "{}/model_{:0>6}.ckpt".format(args.logdir, 0)
 
         if (epoch_idx % args.eval_freq == 0) or (epoch_idx == args.epochs - 1):
             val_model = CascadeMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
@@ -150,9 +151,10 @@ def validate(model, model_loss, optimizer, ValImgLoader, epoch_idx, args):
         is_begin = sample['is_begin'].type(torch.uint8)
         cnt = 0 if is_begin.item() == 1 else cnt + 1
         if cnt >= args.few_shots:
-            loss, scalar_outputs, image_outputs = test_sample_depth(model, model_loss, optimizer, sample, is_begin, args)
+            loss, scalar_outputs, image_outputs = test_sample_depth(model, model_loss, sample, is_begin, args)
         else:
-            loss, scalar_outputs, image_outputs = train_sample(model, model_loss, optimizer, sample, is_begin, args)
+            loss, scalar_outputs, image_outputs = train_sample(model, model_loss, optimizer, sample,
+                                                               is_begin, args, is_testing=True)
 
         if (not is_distributed) or (dist.get_rank() == 0):
             if do_summary:
@@ -189,7 +191,7 @@ def test(model, model_loss, TestImgLoader, args):
         print("final", avg_test_scalars.mean())
 
 
-def train_sample(model, model_loss, optimizer, sample_cuda, is_begin, args):
+def train_sample(model, model_loss, optimizer, sample_cuda, is_begin, args, is_testing=False):
     model.train()
     optimizer.zero_grad()
 
@@ -218,12 +220,29 @@ def train_sample(model, model_loss, optimizer, sample_cuda, is_begin, args):
 
     optimizer.step()
 
-    scalar_outputs = {"loss": loss,
-                      "depth_loss": depth_loss,
-                      "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
-                      "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
-                      "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
-                      "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),}
+    if is_testing:
+        scalar_outputs = {"loss": loss,
+                          "depth_loss": depth_loss,
+                          "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+                          "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
+                          "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
+                          "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),
+                          "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 14),
+                          "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 20),
+
+                          "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, 2.0]),
+                          "thres4mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [2.0, 4.0]),
+                          "thres8mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [4.0, 8.0]),
+                          "thres14mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [8.0, 14.0]),
+                          "thres20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [14.0, 20.0]),
+                          "thres>20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [20.0, 1e5])}
+    else:
+        scalar_outputs = {"loss": loss,
+                          "depth_loss": depth_loss,
+                          "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+                          "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
+                          "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
+                          "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8)}
 
     image_outputs = {"depth_est": depth_est * mask,
                      "depth_est_nomask": depth_est,

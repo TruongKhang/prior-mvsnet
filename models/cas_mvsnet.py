@@ -47,12 +47,15 @@ class LatentScene(nn.Module):
 
     def get_occ_loss(self, inputs, mask=None, ndsamples=1):
         depth = inputs["depth"]
-        depth_interval = np.random.randint(5, 10)
-        depth_samples = get_depth_range_samples(cur_depth=depth,
+        if ndsamples > 1:
+            depth_interval = np.random.randint(5, 10)
+            depth_samples = get_depth_range_samples(cur_depth=depth,
                                                 ndepth=ndsamples, depth_inteval_pixel=depth_interval,
                                                 dtype=depth.dtype, device=depth.device,
                                                 shape=[depth.size(0), depth.size(1), depth.size(2)])
-        inputs["depth"] = depth_samples
+            inputs["depth"] = depth_samples
+        else:
+            inputs["depth"] = depth.unsqueeze(1)
 
         output = self.forward(inputs, ndsamples=ndsamples)
         output = output.squeeze(-1).view(depth.size(0), ndsamples, depth.size(1), depth.size(2))
@@ -161,18 +164,18 @@ class DepthNet(nn.Module):
 
         # itg_prob_volume = prob_volume
 
-        depth = depth_regression(prob_volume, depth_values=depth_values)
-
-        with torch.no_grad():
-            # photometric confidence
-            prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(prob_volume.unsqueeze(1), pad=[0, 0, 0, 0, 0, 1]), (2, 1, 1), stride=1, padding=0).squeeze(1)
-            depth_index = depth_regression(prob_volume, depth_values=torch.arange(num_depth, device=prob_volume.device, dtype=torch.float)).long()
-            depth_index = depth_index.clamp(min=0, max=num_depth-1)
-            photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
+        # depth = depth_regression(prob_volume, depth_values=depth_values)
+        #
+        # with torch.no_grad():
+        #     # photometric confidence
+        #     prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(prob_volume.unsqueeze(1), pad=[0, 0, 0, 0, 0, 1]), (2, 1, 1), stride=1, padding=0).squeeze(1)
+        #     depth_index = depth_regression(prob_volume, depth_values=torch.arange(num_depth, device=prob_volume.device, dtype=torch.float)).long()
+        #     depth_index = depth_index.clamp(min=0, max=num_depth-1)
+        #     photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
         # else:
         #     itg_prob_volume = cost_reg
         #     depth, photometric_confidence = None, None
-        return {"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": prob_volume}
+        return prob_volume #{"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": prob_volume}
 
         # return {"depth": depth,  "photometric_confidence": photometric_confidence}
 
@@ -219,7 +222,7 @@ class CascadeMVSNet(nn.Module):
             self.refine_network = RefineNet()
 
         self.DepthNet = DepthNet(self.ndepths)
-        self.latent_scene = LatentScene(3+self.feature.out_channels[-1], 1, 119, 64, 64, 5)
+        self.latent_scene = LatentScene(3+self.feature.out_channels[-1], 1, 119, 64, 64, 7)
 
         if self.is_training:
             all_params = list(self.feature.parameters()) + list(self.cost_regularization.parameters()) + \
@@ -306,50 +309,57 @@ class CascadeMVSNet(nn.Module):
                     pred_vol = pred_vol.squeeze(-1).view(subset_depth_values.size(0), self.ndepths[stage_idx], height, width)
                     prior_vol[~first_view] = pred_vol
 
-            outputs_stage = self.DepthNet(features_stage, (refs, srcs),
-                                          depth_values=depth_values_stage,
-                                          num_depth=self.ndepths[stage_idx],
-                                          cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
-                                          stage_idx=stage_idx)
+            likelihood_vol = self.DepthNet(features_stage, (refs, srcs),
+                                           depth_values=depth_values_stage, num_depth=self.ndepths[stage_idx],
+                                           cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
+                                           stage_idx=stage_idx)
 
             prior_vol = F.normalize(prior_vol, p=1, dim=1)
-            itg_cost_vol = outputs_stage["prob_volume"] * prior_vol
+            itg_cost_vol = likelihood_vol * prior_vol
             itg_cost_vol = F.normalize(itg_cost_vol, p=1, dim=1)
-            outputs_stage['depth'] = depth_regression(itg_cost_vol, depth_values=depth_values_stage)
+            depth = depth_regression(itg_cost_vol, depth_values=depth_values_stage)
             with torch.no_grad():
                 # photometric confidence
-                prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(itg_cost_vol.unsqueeze(1), pad=[0, 0, 0, 0, 0, 1]),
-                                                    (2, 1, 1), stride=1, padding=0).squeeze(1)
+                prob_volume_sum4 = 4 * F.avg_pool3d(F.pad(itg_cost_vol.unsqueeze(1), pad=[0, 0, 0, 0, 1, 2]),
+                                                    (4, 1, 1), stride=1, padding=0).squeeze(1)
                 depth_index = depth_regression(itg_cost_vol.detach(),
                                                depth_values=torch.arange(self.ndepths[stage_idx],
                                                                          device=itg_cost_vol.device, dtype=torch.float)).long()
                 depth_index = depth_index.clamp(min=0, max=self.ndepths[stage_idx]-1)
-                photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
-            outputs_stage['photometric_confidence'] = photometric_confidence
-            outputs_stage['prob_volume'] = itg_cost_vol
+                conf = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
+            outputs_stage = {"depth": depth, "photometric_confidence": conf}
+            # outputs_stage['prob_volume'] = itg_cost_vol
 
-            depth = outputs_stage['depth']
+            # depth = outputs_stage['depth']
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)
-            depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
+            # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
 
             if stage_idx == 0:
                 ndsamples = 9
+                img_feat_train = img_feat
                 if self.is_training:
                     inp_depth = gt_depth_stage
                     inp_mask = (gt_mask_stage > 0.5)
+                    inp_latent_net = {"scene_idx": scene_ids, "pose": torch.inverse(extrinsics),
+                                      "depth": inp_depth, "intrinsics": intrinsics,
+                                      "uv": uv.repeat(img_feat.size(0), ndsamples, 1, 1, 1),
+                                      "img_feature": img_feat_train}
+                    latent_out, latent_target = self.latent_scene.get_occ_loss(inp_latent_net, ndsamples=ndsamples)
+                    out_mask = inp_mask.unsqueeze(1).repeat(1, ndsamples, 1, 1)
                 else:
                     inp_depth = depth
-                    inp_mask = outputs_stage["photometric_confidence"] > 0.8
-                img_feat_train = img_feat
-                inp_latent_net = {"scene_idx": scene_ids, "pose": torch.inverse(extrinsics),
-                                  "depth": inp_depth, "intrinsics": intrinsics,
-                                  "uv": uv.repeat(img_feat.size(0), ndsamples, 1, 1, 1),
-                                  "img_feature": img_feat_train}
-                latent_out, latent_target = self.latent_scene.get_occ_loss(inp_latent_net, ndsamples=ndsamples)
+                    inp_mask = outputs_stage["photometric_confidence"] > 0.5
+                    inp_latent_net = {"scene_idx": scene_ids, "pose": torch.inverse(extrinsics),
+                                      "depth": inp_depth, "intrinsics": intrinsics,
+                                      "uv": uv.repeat(img_feat.size(0), 1, 1, 1, 1),
+                                      "img_feature": img_feat_train}
+                    latent_out, latent_target = self.latent_scene.get_occ_loss(inp_latent_net, ndsamples=1)
+                    out_mask = inp_mask.unsqueeze(1)
+
                 outputs["occ_output"] = latent_out
                 outputs["occ_target"] = latent_target
-                outputs["occ_mask"] = inp_mask.unsqueeze(1).repeat(1, ndsamples, 1, 1)
+                outputs["occ_mask"] = out_mask # inp_mask.unsqueeze(1).repeat(1, ndsamples, 1, 1)
         # depth map refinement
         if self.refine:
             refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))

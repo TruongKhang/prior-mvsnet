@@ -130,7 +130,7 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
 
     latent_loss = torch.mean(inputs["scene_embedding"] ** 2)
     occ_out, occ_target, occ_mask = inputs["occ_output"], inputs["occ_target"], inputs["occ_mask"]
-    occ_loss = F.binary_cross_entropy(occ_out[occ_mask], occ_target[occ_mask])
+    occ_loss = F.binary_cross_entropy(occ_out[occ_mask], occ_target[occ_mask]) if occ_mask.sum() > 0 else 0.0
     total_loss = total_loss + latent_loss + occ_loss
 
     for (stage_inputs, stage_key) in [(inputs[k], k) for k in inputs.keys() if "stage" in k]:
