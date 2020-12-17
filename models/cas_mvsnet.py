@@ -56,6 +56,8 @@ class LatentScene(nn.Module):
             inputs["depth"] = depth_samples
         else:
             inputs["depth"] = depth.unsqueeze(1)
+        if mask is not None:
+            inputs["depth"] = inputs["depth"] * mask.unsqueeze(1).float()
 
         output = self.forward(inputs, ndsamples=ndsamples)
         output = output.squeeze(-1).view(depth.size(0), ndsamples, depth.size(1), depth.size(2))
@@ -93,6 +95,7 @@ class LatentScene(nn.Module):
         points_xyz = world_from_xy_depth(uv, depth, pose, intrinsics)
         points_xyz = points_xyz.contiguous()
         points_xyz = points_xyz.view(points_xyz.size(0), -1, points_xyz.size(-1))
+        points_xyz[:, :, 2] /= 100 # print(points_xyz[:, :3, :])
 
         batch_size, nchannels, h, w = img_feat.size()
         img_feat = img_feat.permute(0, 2, 3, 1)
@@ -182,7 +185,7 @@ class DepthNet(nn.Module):
 
 class CascadeMVSNet(nn.Module):
     def __init__(self, refine=False, ndepths=(48, 32, 8), depth_interals_ratio=(4, 2, 1), share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), is_traning=True):
+                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), is_training=True):
         super(CascadeMVSNet, self).__init__()
         self.refine = refine
         self.share_cr = share_cr
@@ -192,7 +195,7 @@ class CascadeMVSNet(nn.Module):
         self.arch_mode = arch_mode
         self.cr_base_chs = cr_base_chs
         self.num_stage = len(ndepths)
-        self.is_training = is_traning
+        self.is_training = is_training
         print("**********netphs:{}, depth_intervals_ratio:{},  grad:{}, chs:{}************".format(ndepths,
               depth_interals_ratio, self.grad_method, self.cr_base_chs))
 
@@ -222,9 +225,9 @@ class CascadeMVSNet(nn.Module):
             self.refine_network = RefineNet()
 
         self.DepthNet = DepthNet(self.ndepths)
-        self.latent_scene = LatentScene(3+self.feature.out_channels[-1], 1, 119, 64, 64, 7)
+        self.latent_scene = LatentScene(3+self.feature.out_channels[-1], 1, 128, 32, 32, 7)
 
-        if self.is_training:
+        if not self.is_training:
             all_params = list(self.feature.parameters()) + list(self.cost_regularization.parameters()) + \
                          list(self.latent_scene.hyper_phi.parameters())
             for param in all_params:
@@ -336,7 +339,7 @@ class CascadeMVSNet(nn.Module):
             # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
 
             if stage_idx == 0:
-                ndsamples = 9
+                ndsamples = 5
                 img_feat_train = img_feat
                 if self.is_training:
                     inp_depth = gt_depth_stage
@@ -345,7 +348,8 @@ class CascadeMVSNet(nn.Module):
                                       "depth": inp_depth, "intrinsics": intrinsics,
                                       "uv": uv.repeat(img_feat.size(0), ndsamples, 1, 1, 1),
                                       "img_feature": img_feat_train}
-                    latent_out, latent_target = self.latent_scene.get_occ_loss(inp_latent_net, ndsamples=ndsamples)
+                    latent_out, latent_target = self.latent_scene.get_occ_loss(inp_latent_net, mask=inp_mask, ndsamples=ndsamples)
+                    # print(latent_out.min().item(), latent_out.max().item())
                     out_mask = inp_mask.unsqueeze(1).repeat(1, ndsamples, 1, 1)
                 else:
                     inp_depth = depth

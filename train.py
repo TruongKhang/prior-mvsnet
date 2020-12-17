@@ -122,7 +122,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                                       depth_interals_ratio=[float(d_i) for d_i in args.depth_inter_r.split(",") if d_i],
                                       share_cr=args.share_cr,
                                       cr_base_chs=[int(ch) for ch in args.cr_base_chs.split(",") if ch],
-                                      grad_method=args.grad_method, is_traning=False)
+                                      grad_method=args.grad_method, is_training=False)
             val_model.to(torch.device(args.device))
             val_model_loss = cas_mvsnet_loss
 
