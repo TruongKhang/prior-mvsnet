@@ -2,12 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .module import *
-from models.losses import StereoFocalLoss
 from .utils.warping import homo_warping_3D, resample_vol, homo_warping_2D, world_from_xy_depth
 import numpy as np
-from models.module import FCBlock, ResnetBlockFC
 from models import hyperlayers
-from .cvae import Encoder
 
 
 Align_Corners_Range = False
@@ -15,7 +12,7 @@ Align_Corners_Range = False
 
 class LatentScene(nn.Module):
     def __init__(self, in_channels, out_channels, num_instances, latent_dim,
-                 num_hidden_units_phi, phi_layers, freeze_networks=False):
+                 num_hidden_units_phi, phi_layers):
         super(LatentScene, self).__init__()
 
         # Auto-decoder: each scene instance gets its own code vector z
@@ -28,11 +25,11 @@ class LatentScene(nn.Module):
                                              hidden_ch=num_hidden_units_phi,
                                              num_hidden_layers=phi_layers - 2,
                                              in_ch=in_channels, out_ch=out_channels, outer_activation='sigmoid')
-        if freeze_networks:
-            for param in self.hyper_phi.parameters():
-                param.requires_grad = False
+        # if freeze_networks:
+        #     for param in self.hyper_phi.parameters():
+        #         param.requires_grad = False
 
-        self.z = None
+        # self.z = None
 
     def get_latent_loss(self):
         """Computes loss on latent code vectors (L_{latent} in eq. 6 in paper)
@@ -59,13 +56,13 @@ class LatentScene(nn.Module):
         if mask is not None:
             inputs["depth"] = inputs["depth"] * mask.unsqueeze(1).float()
 
-        output = self.forward(inputs, ndsamples=ndsamples)
+        output, embeddings = self.forward(inputs, ndsamples=ndsamples)
         output = output.squeeze(-1).view(depth.size(0), ndsamples, depth.size(1), depth.size(2))
-        target = torch.zeros_like(output)
+        target = torch.zeros((depth.size(0), ndsamples, depth.size(1), depth.size(2)), device=output.device)
         target[:, (ndsamples-1)//2, :, :] = 1.0
-        return output, target
+        return output, target, embeddings
 
-    def forward(self, inputs, z=None, ndsamples=1):
+    def forward(self, inputs, ndsamples=1):
         # self.logs = list()  # log saves tensors that"ll receive summaries when model"s write_updates function is called
 
         # Parse model input.
@@ -80,12 +77,13 @@ class LatentScene(nn.Module):
         #     phi = self.phi
         # else:
         #     if self.has_params:  # If each instance has a latent parameter vector, we"ll use that one.
-        if z is not None:
-            self.z = z
-        else:
-            self.z = self.latent_codes(instance_idcs)
+        # if z is not None:
+        #     self.z = z
+        # else:
+        #     self.z = self.latent_codes(instance_idcs)
+        z = self.latent_codes(instance_idcs)
 
-        phi = self.hyper_phi(self.z)  # Forward pass through hypernetwork yields a (callable) SRN.
+        phi = self.hyper_phi(z)  # Forward pass through hypernetwork yields a (callable) SRN.
 
         # Raymarch SRN phi along rays defined by camera pose, intrinsics and uv coordinates.
 
@@ -93,13 +91,14 @@ class LatentScene(nn.Module):
 
         # Sapmle phi a last time at the final ray-marched world coordinates.
         points_xyz = world_from_xy_depth(uv, depth, pose, intrinsics)
-        points_xyz = points_xyz.contiguous()
-        points_xyz = points_xyz.view(points_xyz.size(0), -1, points_xyz.size(-1))
+        # points_xyz = points_xyz.contiguous()
+        # points_xyz = points_xyz.view(points_xyz.size(0), -1, points_xyz.size(-1))
         points_xyz[:, :, 2] /= 100 # print(points_xyz[:, :3, :])
 
         batch_size, nchannels, h, w = img_feat.size()
-        img_feat = img_feat.permute(0, 2, 3, 1)
-        img_feat = img_feat.view(batch_size, -1, nchannels).repeat(1, ndsamples, 1)
+        img_feat = img_feat.view(batch_size, nchannels, -1)
+        img_feat = img_feat.permute(0, 2, 1)
+        img_feat = img_feat.repeat(1, ndsamples, 1) #.view(batch_size, -1, nchannels).repeat(1, ndsamples, 1)
 
         occ = phi(torch.cat((points_xyz, img_feat), dim=-1))
 
@@ -110,7 +109,7 @@ class LatentScene(nn.Module):
         #     self.logs.append(("scalar", "embed_min", self.z.min(), 1))
         #     self.logs.append(("scalar", "embed_max", self.z.max(), 1))
 
-        return occ
+        return occ, z
 
 
 class DepthNet(nn.Module):
@@ -202,7 +201,7 @@ class CascadeMVSNet(nn.Module):
         assert len(ndepths) == len(depth_interals_ratio)
 
         self.stage_infos = {
-            "stage1":{
+            "stage1": {
                 "scale": 4.0,
             },
             "stage2": {
@@ -225,7 +224,7 @@ class CascadeMVSNet(nn.Module):
             self.refine_network = RefineNet()
 
         self.DepthNet = DepthNet(self.ndepths)
-        self.latent_scene = LatentScene(3+self.feature.out_channels[-1], 1, 128, 32, 32, 7)
+        self.latent_scene = LatentScene(3, 1, 128, 32, 32, 7)
 
         if not self.is_training:
             all_params = list(self.feature.parameters()) + list(self.cost_regularization.parameters()) + \
@@ -292,9 +291,9 @@ class CascadeMVSNet(nn.Module):
             height, width = img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)
             y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=imgs.device),
                                    torch.arange(0, width, dtype=torch.float32, device=imgs.device)])
-            y, x = y.contiguous(), x.contiguous()
+            y, x = y.contiguous().view(-1), x.contiguous().view(-1)
             uv = torch.stack([x, y], dim=-1)
-            uv = uv.unsqueeze(0).unsqueeze(0)
+            uv = uv.unsqueeze(0) # .unsqueeze(0)
 
             img_feat = F.interpolate(origin_img_feat, [height, width], mode='bilinear', align_corners=Align_Corners_Range)
 
@@ -305,11 +304,13 @@ class CascadeMVSNet(nn.Module):
                     pose = torch.inverse(extrinsics[~first_view])
                     img_feat_pred = img_feat[~first_view]
                     subset_depth_values = depth_values_stage[~first_view]
-                    pred_vol = self.latent_scene({"scene_idx": scene_ids[~first_view], "pose": pose,
+                    pred_vol, _ = self.latent_scene({"scene_idx": scene_ids[~first_view], "pose": pose,
                                                   "depth": subset_depth_values, "intrinsics": intrinsics[~first_view],
-                                                  "uv": uv.repeat(subset_depth_values.size(0), self.ndepths[stage_idx], 1, 1, 1),
-                                                  "img_feature": img_feat_pred}, ndsamples=self.ndepths[stage_idx])
-                    pred_vol = pred_vol.squeeze(-1).view(subset_depth_values.size(0), self.ndepths[stage_idx], height, width)
+                                                  "uv": uv.repeat(subset_depth_values.size(0), self.ndepths[stage_idx], 1),
+                                                  "img_feature": img_feat_pred},
+                                                 ndsamples=self.ndepths[stage_idx])
+                    pred_vol = pred_vol.squeeze(-1).view(subset_depth_values.size(0), self.ndepths[stage_idx], height,
+                                                         width)
                     prior_vol[~first_view] = pred_vol
 
             likelihood_vol = self.DepthNet(features_stage, (refs, srcs),
@@ -337,7 +338,6 @@ class CascadeMVSNet(nn.Module):
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)
             # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
-
             if stage_idx == 0:
                 ndsamples = 5
                 img_feat_train = img_feat
@@ -346,9 +346,9 @@ class CascadeMVSNet(nn.Module):
                     inp_mask = (gt_mask_stage > 0.5)
                     inp_latent_net = {"scene_idx": scene_ids, "pose": torch.inverse(extrinsics),
                                       "depth": inp_depth, "intrinsics": intrinsics,
-                                      "uv": uv.repeat(img_feat.size(0), ndsamples, 1, 1, 1),
+                                      "uv": uv.repeat(img_feat.size(0), ndsamples, 1),
                                       "img_feature": img_feat_train}
-                    latent_out, latent_target = self.latent_scene.get_occ_loss(inp_latent_net, mask=inp_mask, ndsamples=ndsamples)
+                    latent_out, latent_target, embeddings = self.latent_scene.get_occ_loss(inp_latent_net, mask=inp_mask, ndsamples=ndsamples)
                     # print(latent_out.min().item(), latent_out.max().item())
                     out_mask = inp_mask.unsqueeze(1).repeat(1, ndsamples, 1, 1)
                 else:
@@ -356,19 +356,20 @@ class CascadeMVSNet(nn.Module):
                     inp_mask = outputs_stage["photometric_confidence"] > 0.5
                     inp_latent_net = {"scene_idx": scene_ids, "pose": torch.inverse(extrinsics),
                                       "depth": inp_depth, "intrinsics": intrinsics,
-                                      "uv": uv.repeat(img_feat.size(0), 1, 1, 1, 1),
+                                      "uv": uv.repeat(img_feat.size(0), 1, 1),
                                       "img_feature": img_feat_train}
-                    latent_out, latent_target = self.latent_scene.get_occ_loss(inp_latent_net, ndsamples=1)
+                    latent_out, latent_target, embeddings = self.latent_scene.get_occ_loss(inp_latent_net, ndsamples=1)
                     out_mask = inp_mask.unsqueeze(1)
 
                 outputs["occ_output"] = latent_out
                 outputs["occ_target"] = latent_target
                 outputs["occ_mask"] = out_mask # inp_mask.unsqueeze(1).repeat(1, ndsamples, 1, 1)
+                outputs['scene_embedding'] = embeddings
+
         # depth map refinement
         if self.refine:
             refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
             outputs["refined_depth"] = refined_depth
-        outputs["depth_candidates"] = depth_range_values
-        outputs['scene_embedding'] = self.latent_scene.z
+        # outputs["depth_candidates"] = depth_range_values
         # outputs["total_loss_vol"] = total_loss
         return outputs

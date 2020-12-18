@@ -169,9 +169,9 @@ def validate(model, model_loss, optimizer, ValImgLoader, epoch_idx, args):
             avg_test_scalars.update(scalar_outputs)
             del scalar_outputs, image_outputs
 
-    # if (not is_distributed) or (dist.get_rank() == 0):
-    #     save_scalars(logger, 'fulltest', avg_test_scalars.mean(), global_step)
-    #     print("avg_test_scalars:", avg_test_scalars.mean())
+    if (not is_distributed) or (dist.get_rank() == 0):
+        # save_scalars(logger, 'fulltest', avg_test_scalars.mean(), global_step)
+        print("avg_test_scalars:", avg_test_scalars.mean())
     gc.collect()
 
 

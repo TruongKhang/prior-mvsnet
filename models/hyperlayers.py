@@ -168,7 +168,7 @@ class HyperFC(nn.Module):
         for i in range(len(self.layers)):
             net.append(self.layers[i](hyper_input))
         if self.outer_activation == 'sigmoid':
-            net += [nn.LayerNorm([self.out_channels], elementwise_affine=False), nn.Sigmoid()]
+            net += [nn.Sigmoid()]
 
         return nn.Sequential(*net)
 

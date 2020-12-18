@@ -53,17 +53,17 @@ def world_from_xy_depth(xy, depth, cam2world, intrinsics):
     # y, x = y.contiguous(), x.contiguous()
     # y, x = y.view(height * width), x.view(height * width)
 
-    x_cam = xy[..., 0].view(batch_size, ndepths, -1)
-    y_cam = xy[..., 1].view(batch_size, ndepths, -1)
-    z_cam = depth.view(batch_size, ndepths, -1)
+    x_cam = xy[..., 0].view(batch_size, -1) # ndepths, -1)
+    y_cam = xy[..., 1].view(batch_size, -1) # ndepths, -1)
+    z_cam = depth.view(batch_size, -1) # ndepths, -1)
 
     pixel_points_cam = lift(x_cam, y_cam, z_cam, intrinsics=intrinsics, homogeneous=True)  # (batch_size, -1, 4)
 
     # permute for batch matrix product
-    pixel_points_cam = pixel_points_cam.permute(0, 1, 3, 2)
+    pixel_points_cam = pixel_points_cam.permute(0, 2, 1) #1, 3, 2)
 
-    # world_coords = torch.bmm(cam2world, pixel_points_cam).permute(0, 2, 1)[:, :, :3]  # (batch_size, -1, 3)
-    world_coords = torch.matmul(cam2world.unsqueeze(1), pixel_points_cam).permute(0, 1, 3, 2)[..., :3]
+    world_coords = torch.bmm(cam2world, pixel_points_cam).permute(0, 2, 1)[:, :, :3]  # (batch_size, -1, 3)
+    # world_coords = torch.matmul(cam2world.unsqueeze(1), pixel_points_cam).permute(0, 1, 3, 2)[..., :3]
 
     return world_coords
 
