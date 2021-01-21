@@ -129,7 +129,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
             val_model_loss = seq_prob_loss
 
             val_optimizer = optim.Adam(filter(lambda p: p.requires_grad, val_model.latent_scene.parameters()),
-                                       lr=0.00005, betas=(0.9, 0.999), weight_decay=args.wd)
+                                       lr=0.0001, betas=(0.9, 0.999), weight_decay=args.wd)
             # load checkpoint file specified by args.loadckpt
             print("loading model {}".format(chkpt_file))
             val_state_dict = torch.load(chkpt_file)
@@ -464,6 +464,8 @@ if __name__ == '__main__':
                           cr_base_chs=[int(ch) for ch in args.cr_base_chs.split(",") if ch],
                           grad_method=args.grad_method)
     model.to(device)
+    ckpt = torch.load('pretrained_model.ckpt')
+    model.load_state_dict(ckpt['model'])
     model_loss = seq_prob_loss #cas_mvsnet_loss
 
     if args.sync_bn:
@@ -523,9 +525,9 @@ if __name__ == '__main__':
     # dataset, dataloader
     MVSDataset = find_dataset_def(args.dataset)
     train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 3, args.numdepth, args.interval_scale,
-                               shuffle=True, seq_size=49, batch_size=args.batch_size, depth_scale=args.depth_scale)
+                               shuffle=True, seq_size=7, batch_size=args.batch_size, depth_scale=args.depth_scale)
     test_dataset = MVSDataset(args.testpath, args.testlist, "val", 3, args.numdepth, args.interval_scale,
-                              shuffle=False, seq_size=49, batch_size=1, depth_scale=args.depth_scale)
+                              shuffle=False, seq_size=7, batch_size=1, depth_scale=args.depth_scale)
 
     train_sampler = torch.utils.data.SequentialSampler(train_dataset)
     TrainImgLoader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, sampler=train_sampler,
