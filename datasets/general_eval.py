@@ -39,6 +39,17 @@ class MVSDataset(Dataset):
             else:
                 self.spliter.append((name, np.arange(num_imgs)))
         print("dataset", self.mode, "metas:", total_imgs)
+        self.trans_norm = {}
+
+        scale_file = os.path.join(self.datapath, 'scale_dtu.txt')
+        if not os.path.exists(scale_file):
+            self.trans_norm = None
+        else:
+            with open(scale_file) as fp:
+                for line in fp:
+                    line = line.strip().split(':')
+                    scan = line[0]
+                    self.trans_norm[scan] = np.array(line[1].split(','), dtype=np.float32)
 
         self.generate_indices()
 
@@ -257,4 +268,6 @@ class MVSDataset(Dataset):
                 "proj_matrices": proj_matrices_ms,
                 "depth_values": depth_values,
                 "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}",
-                "is_begin": self.list_begin[idx]}
+                "is_begin": self.list_begin[idx],
+                "scene_idx": int(scan.replace("scan", ""))-1,
+                "trans_norm": self.trans_norm[scan] if self.trans_norm is not None else np.zeros(3)}

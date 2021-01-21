@@ -109,7 +109,7 @@ class HyperLayer(nn.Module):
                                         hyper_num_hidden_layers=hyper_num_hidden_layers,
                                         hyper_hidden_ch=hyper_hidden_ch)
         self.norm_nl = nn.Sequential(
-            nn.LayerNorm([out_ch], elementwise_affine=False),
+            # nn.LayerNorm([out_ch], elementwise_affine=False),
             nn.ReLU(inplace=True)
         )
 

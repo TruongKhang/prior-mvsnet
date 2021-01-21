@@ -2,126 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .module import depth_regression
-
-class StereoFocalLoss(object):
-    """
-    Under the same start disparity and maximum disparity, calculating all estimated cost volumes' loss
-        Args:
-            max_disp, (int): the max of Disparity. default: 192
-            start_disp, (int): the start searching disparity index, usually be 0
-            dilation (int): the step between near disparity index, it mainly used in gt probability volume generation
-            weights, (list of float or None): weight for each scale of estCost.
-            focal_coefficient, (float): stereo focal loss coefficient, details please refer to paper. default: 0.0
-            sparse, (bool): whether the ground-truth disparity is sparse, for example, KITTI is sparse, but SceneFlow is not. default: False
-        Inputs:
-            estCost, (Tensor or list of Tensor): the estimated cost volume, in (BatchSize, max_disp, Height, Width) layout
-            gtDisp, (Tensor): the ground truth disparity map, in (BatchSize, 1, Height, Width) layout.
-            variance, (Tensor or list of Tensor): the variance of distribution, details please refer to paper, in (BatchSize, 1, Height, Width) layout.
-        Outputs:
-            loss, (dict), the loss of each level
-        ..Note:
-            Before calculate loss, the estCost shouldn't be normalized,
-              because we will use softmax for normalization
-    """
-
-    def __init__(self, weights=None, focal_coefficient=0.0, sparse=False):
-        # self.max_disp = max_disp
-        # self.start_disp = start_disp
-        # self.dilation = dilation
-        self.weights = weights
-        self.focal_coefficient = focal_coefficient
-        self.sparse = sparse
-        if sparse:
-            # sparse disparity ==> max_pooling
-            self.scale_func = F.adaptive_max_pool2d
-        else:
-            # dense disparity ==> avg_pooling
-            self.scale_func = F.adaptive_avg_pool2d
-
-    def loss_per_level(self, estCost, gtDisp, variance, depth_candi_vol):
-        from models.utils import LaplaceDisp2Prob, GaussianDisp2Prob, OneHotDisp2Prob
-        N, C, H, W = estCost.shape
-        scaled_gtDisp = gtDisp.clone()
-        scale = 1.0
-        if gtDisp.shape[-2] != H or gtDisp.shape[-1] != W:
-            # compute scale per level and scale gtDisp
-            scale = gtDisp.shape[-1] / (W * 1.0)
-            scaled_gtDisp = gtDisp.clone() / scale
-
-            scaled_gtDisp = self.scale_func(scaled_gtDisp, (H, W))
-
-        # mask for valid disparity
-        # (start_disp, max disparity / scale)
-        # Attention: the invalid disparity of KITTI is set as 0, be sure to mask it out
-        lower_bound = depth_candi_vol[:, [0], :, :] #self.start_disp
-        upper_bound = depth_candi_vol[:, [-1], :, :] #lower_bound + int(self.max_disp/scale)
-        mask = (scaled_gtDisp - lower_bound > 0) & (scaled_gtDisp - upper_bound < 0)
-        mask = mask.detach_().type_as(scaled_gtDisp)
-        if mask.sum() < 1.0:
-            print('Stereo focal loss: there is no point\'s '
-                  'disparity is in [{},{})!'.format(lower_bound, upper_bound))
-            scaled_gtProb = torch.zeros_like(estCost)  # let this sample have loss with 0
-        else:
-            # transfer disparity map to probability map
-            mask_scaled_gtDisp = scaled_gtDisp * mask
-            if mask_scaled_gtDisp.size(1) == 1:
-                scaled_gtProb = LaplaceDisp2Prob(depth_candi_vol, mask_scaled_gtDisp, variance=variance).getProb()
-            else:
-                scaled_gtProb = mask_scaled_gtDisp
-
-        # stereo focal loss
-        estProb = torch.log(estCost + 1e-20) #F.log_softmax(estCost, dim=1)
-        weight = (1.0 - scaled_gtProb).pow(-self.focal_coefficient).type_as(scaled_gtProb)
-        loss = -((scaled_gtProb * estProb) * weight * mask.float()).sum(dim=1, keepdim=True).mean()
-
-        return loss
-
-    def __call__(self, estCost, gtDisp, variance):
-        if not isinstance(estCost, (list, tuple)):
-            estCost = [estCost]
-
-        if self.weights is None:
-            self.weights = 1.0
-
-        if not isinstance(self.weights, (list, tuple)):
-            self.weights = [self.weights] * len(estCost)
-
-        if not isinstance(self.dilation, (list, tuple)):
-            self.dilation = [self.dilation] * len(estCost)
-
-        if not isinstance(variance, (list, tuple)):
-            variance = [variance] * len(estCost)
-
-        # compute loss for per level
-        loss_all_level = []
-        for est_cost_per_lvl, var, dt in zip(estCost, variance, self.dilation):
-            loss_all_level.append(
-                self.loss_per_level(est_cost_per_lvl, gtDisp, var, dt))
-
-        # re-weight loss per level
-        weighted_loss_all_level = dict()
-        for i, loss_per_level in enumerate(loss_all_level):
-            name = "stereo_focal_loss_lvl{}".format(i)
-            weighted_loss_all_level[name] = self.weights[i] * loss_per_level
-
-        return weighted_loss_all_level
-
-    def __repr__(self):
-        repr_str = '{}\n'.format(self.__class__.__name__)
-        repr_str += ' ' * 4 + 'Max Disparity: {}\n'.format(self.max_disp)
-        repr_str += ' ' * 4 + 'Start disparity: {}\n'.format(self.start_disp)
-        repr_str += ' ' * 4 + 'Dilation rate: {}\n'.format(self.dilation)
-        repr_str += ' ' * 4 + 'Loss weight: {}\n'.format(self.weights)
-        repr_str += ' ' * 4 + 'Focal coefficient: {}\n'.format(self.focal_coefficient)
-        repr_str += ' ' * 4 + 'Disparity is sparse: {}\n'.format(self.sparse)
-
-        return repr_str
-
-    @property
-    def name(self):
-        return 'StereoFocalLoss'
-
 
 def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
     depth_loss_weights = kwargs.get("dlossw", None)
@@ -130,11 +10,12 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
 
     latent_loss = torch.mean(inputs["scene_embedding"] ** 2)
     occ_out, occ_target, occ_mask = inputs["occ_output"], inputs["occ_target"], inputs["occ_mask"]
-    occ_loss = F.binary_cross_entropy(occ_out[occ_mask], occ_target[occ_mask]) if occ_mask.sum() > 0 else 0.0
+    occ_mask = occ_mask.float()
+    occ_loss = F.binary_cross_entropy(occ_out * occ_mask, occ_target * occ_mask)
     # print(occ_out.requires_grad, occ_target.requires_grad)
     total_loss = total_loss + latent_loss + occ_loss
 
-    for (stage_inputs, stage_key) in [(inputs[k], k) for k in inputs.keys() if "stage" in k]:
+    for (stage_inputs, stage_key) in [(inputs[k], k) for k in ["stage1", "stage2", "stage3"]]: # inputs.keys() if "stage" in k]:
         depth_est = stage_inputs["depth"]
         depth_gt = depth_gt_ms[stage_key]
         mask = mask_ms[stage_key]
@@ -177,4 +58,79 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
     # total_loss += inputs["total_loss_vol"]
     # print(total_loss.item(), occ_loss.item(), occ_mask.sum())
 
+    return total_loss, depth_loss
+
+
+def scene_representation_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
+    total_loss = torch.tensor(0.0, dtype=torch.float32, device=mask_ms["stage1"].device, requires_grad=False)
+
+    latent_loss = torch.mean(inputs["scene_embedding"] ** 2)
+    occ_out, occ_target, occ_mask = inputs["occ_output"], inputs["occ_target"], inputs["occ_mask"]
+    # occ_mask = occ_mask.float()
+    occ_loss = F.binary_cross_entropy_with_logits(occ_out[occ_mask], occ_target[occ_mask])
+    # print(occ_out.requires_grad, occ_target.requires_grad)
+    total_loss = total_loss + latent_loss + occ_loss
+    return total_loss, occ_loss
+
+
+# def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
+#     depth_loss_weights = kwargs.get("dlossw", None)
+#
+#     total_loss = torch.tensor(0.0, dtype=torch.float32, device=mask_ms["stage1"].device, requires_grad=False)
+#
+#     latent_loss = torch.mean(inputs["scene_embedding"] ** 2) if inputs["scene_embedding"] is not None else 0.0
+#     total_loss = total_loss + latent_loss
+#
+#     for (stage_inputs, stage_key) in [(inputs[k], k) for k in inputs.keys() if "stage" in k]:
+#         depth_est = stage_inputs["depth"]
+#         depth_gt = depth_gt_ms[stage_key]
+#         mask = mask_ms[stage_key]
+#         mask = mask > 0.5
+#
+#         depth_loss = F.smooth_l1_loss(depth_est[mask], depth_gt[mask], reduction='mean')
+#
+#         if depth_loss_weights is not None:
+#             stage_idx = int(stage_key.replace("stage", "")) - 1
+#             total_loss = total_loss + depth_loss_weights[stage_idx] * depth_loss
+#         else:
+#             total_loss += 1.0 * depth_loss
+#     return total_loss, depth_loss
+
+def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
+    depth_loss_weights = kwargs.get("dlossw", None)
+
+    total_loss = 0.0 #torch.tensor(0.0, dtype=torch.float32, device=mask_ms["stage1"].device, requires_grad=False)
+
+    latent_loss = torch.mean(inputs["scene_embedding"] ** 2) if inputs["scene_embedding"] is not None else 0.0
+    total_loss = total_loss + latent_loss
+    if inputs["prior_prob"] is not None:
+        conf = inputs["scaled_conf"]
+        prior_loss = inputs["prior_prob"] ** 2 / 2
+        masked_prior_loss = prior_loss[conf > 0.8]
+        if len(masked_prior_loss) > 0:
+            total_loss = total_loss + torch.mean(masked_prior_loss)
+
+    depth_loss = 0.0
+    mode = kwargs.get("mode")
+    if mode != "test":
+        for (stage_inputs, stage_key) in [(inputs[k], k) for k in inputs.keys() if "stage" in k]:
+            depth_est = stage_inputs["depth"]
+            depth_gt = depth_gt_ms[stage_key]
+            mask = mask_ms[stage_key]
+            mask = mask > 0.5
+            depth_loss = F.smooth_l1_loss(depth_est[mask], depth_gt[mask], reduction='mean')
+        #if stage_key == "stage3":
+        #    if stage_inputs["label"] is not None:
+        #        nll_loss_weight = kwargs.get("nll_loss_w", 1.0)
+        #        prob_vol, indices = stage_inputs["prob_volume"], stage_inputs["label"]
+        #        prob_loss = F.nll_loss(prob_vol*mask.unsqueeze(1).float(), indices) * nll_loss_weight
+        #    else:
+        #        prob_loss = 0
+        #    total_loss = total_loss + prob_loss
+        #else:
+            if depth_loss_weights is not None:
+                stage_idx = int(stage_key.replace("stage", "")) - 1
+                total_loss = total_loss + depth_loss_weights[stage_idx] * depth_loss
+            else:
+                total_loss += 1.0 * depth_loss
     return total_loss, depth_loss

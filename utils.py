@@ -311,108 +311,66 @@ def generate_pointcloud(rgb, depth, ply_file, intr, scale=1.0):
     print("save ply, fx:{}, fy:{}, cx:{}, cy:{}".format(fx, fy, cx, cy))
 
 
-# class PatchOp:
-#     '''
-#     A op class to extract patches from an image, and overlap-average patches
-#     back to an image, with pre-defined image size, patch size and stride.
-#     '''
-#
-#     def __init__(self, bsz, height, width, psz, stride):
-#         self.psz, self.stride = psz, stride
-#         self.extract_op = tf.extract_image_patches(
-#             tf.ones([bsz, height, width, 1]), [1, psz, psz, 1],
-#             [1, stride, stride, 1], [1, 1, 1, 1], 'VALID').op
-#         self.norm = _ExtractImagePatchesGrad(
-#             self.extract_op, self.extract_op.outputs[0])[0]
-#
-#     def extract_patches(self, image):
-#         patches = tf.extract_image_patches(
-#             image, [1, self.psz, self.psz, 1],
-#             [1, self.stride, self.stride, 1], [1, 1, 1, 1], 'VALID')
-#         return patches
-#
-#     def group_patches(self, patches):
-#         image = _ExtractImagePatchesGrad(self.extract_op, patches)[0]
-#         return image / self.norm
-#
-#     def group_extract(self, patches):
-#         ''' first group, then extract'''
-#         image = self.group_patches(patches)
-#         out = self.extract_patches(image)
-#         return image, out
-#
-#
-# # https://github.com/tensorflow/tensorflow/blob/r1.7/tensorflow/python/ops/array_grad.py#L725
-#
-# from math import ceil
-#
-# from tensorflow.python.framework import sparse_tensor
-# from tensorflow.python.framework import ops
-# from tensorflow.python.ops import array_ops
-# from tensorflow.python.ops import sparse_ops
-#
-# def _ExtractImagePatchesGrad(op, grad):
-#     ''' Gradient function of tf.extract_image_patches. '''
-#
-#     batch_size, rows_in, cols_in, channels = [
-#         dim.value for dim in op.inputs[0].get_shape()]
-#     input_bhwc = array_ops.shape(op.inputs[0])
-#     batch_size = input_bhwc[0]
-#     channels = input_bhwc[3]
-#
-#     _, rows_out, cols_out, _ = [dim.value for dim in op.outputs[0].get_shape()]
-#     _, ksize_r, ksize_c, _ = op.get_attr("ksizes")
-#     _, stride_r, stride_h, _ = op.get_attr("strides")
-#     _, rate_r, rate_c, _ = op.get_attr("rates")
-#     padding = op.get_attr("padding")
-#
-#     ksize_r_eff = ksize_r + (ksize_r - 1) * (rate_r - 1)
-#     ksize_c_eff = ksize_c + (ksize_c - 1) * (rate_c - 1)
-#
-#     if padding == b"SAME":
-#         rows_out = int(ceil(rows_in / stride_r))
-#         cols_out = int(ceil(cols_in / stride_h))
-#         pad_rows = ((rows_out - 1) * stride_r + ksize_r_eff - rows_in) // 2
-#         pad_cols = ((cols_out - 1) * stride_h + ksize_c_eff - cols_in) // 2
-#
-#     elif padding == b"VALID":
-#         rows_out = int(ceil((rows_in - ksize_r_eff + 1) / stride_r))
-#         cols_out = int(ceil((cols_in - ksize_c_eff + 1) / stride_h))
-#         pad_rows = (rows_out - 1) * stride_r + ksize_r_eff - rows_in
-#         pad_cols = (cols_out - 1) * stride_h + ksize_c_eff - cols_in
-#
-#     pad_rows, pad_cols = max(0, pad_rows), max(0, pad_cols)
-#
-#     grad_expanded = array_ops.transpose(
-#         array_ops.reshape(
-#             grad, (batch_size, rows_out, cols_out, ksize_r, ksize_c, channels)),
-#         (1, 2, 3, 4, 0, 5))
-#     grad_flat = array_ops.reshape(grad_expanded, (-1, batch_size * channels))
-#
-#     row_steps = range(0, rows_out * stride_r, stride_r)
-#     col_steps = range(0, cols_out * stride_h, stride_h)
-#
-#     idx = []
-#     for i in range(rows_out):
-#         for j in range(cols_out):
-#             r_low, c_low = row_steps[i] - pad_rows, col_steps[j] - pad_cols
-#             r_high, c_high = r_low + ksize_r_eff, c_low + ksize_c_eff
-#
-#             idx.extend([(r * (cols_in) + c, i * (cols_out * ksize_r * ksize_c) + j
-#                          * (ksize_r * ksize_c) + ri * (ksize_c) + ci)
-#                         for (ri, r) in enumerate(range(r_low, r_high, rate_r))
-#                         for (ci, c) in enumerate(range(c_low, c_high, rate_c))
-#                         if 0 <= r and r < rows_in and 0 <= c and c < cols_in])
-#
-#     sp_shape = (rows_in * cols_in, rows_out * cols_out * ksize_r * ksize_c)
-#
-#     sp_mat = sparse_tensor.SparseTensor(
-#         array_ops.constant(idx, dtype=ops.dtypes.int64),
-#         array_ops.ones((len(idx),), dtype=ops.dtypes.float32), sp_shape)
-#
-#     jac = sparse_ops.sparse_tensor_dense_matmul(sp_mat, grad_flat)
-#
-#     grad_out = array_ops.reshape(jac, (rows_in, cols_in, batch_size, channels))
-#     grad_out = array_ops.transpose(grad_out, (2, 0, 1, 3))
-#
-#     return [grad_out]
+from datasets.dtu_yao import MVSDataset
+from torch.utils.data import DataLoader
+from models.utils.warping import world_from_xy_depth
+import os
+def pixels_to_world_example():
+    train_path = '/home/khangtg/Documents/lab/mvs/dataset/mvs/dtu_dataset/train'
+    train_list = 'lists/dtu/subsub_train.txt'
+    stage = "stage3"
+    save_folder = '/home/khangtg/Documents/lab/mvs/dataset/mvs/dtu_dataset/train/3d_point_cloud'
+
+    dataset = MVSDataset(train_path, train_list, "val", 3, 192, 1.06, shuffle=False, seq_size=49, batch_size=1,
+                         depth_scale=1.0)
+    sampler = torch.utils.data.SequentialSampler(dataset)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, sampler=sampler, num_workers=4)
+    for idx, sample in enumerate(dataloader):
+        sample = tocuda(sample)
+        depth, proj_matrix = sample["depth"][stage], sample["proj_matrices"][stage]
+        proj_matrix = proj_matrix.unbind(1)
+        ref, src = proj_matrix[0], proj_matrix[1:]
+        intrinsics, extrinsics = ref[:, 1, :3, :3], ref[:, 0, :4, :4]
+
+        batch_size, height, width = depth.size()
+        y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=sample["scene_idx"].device),
+                               torch.arange(0, width, dtype=torch.float32, device=sample["scene_idx"].device)])
+        y, x = y.contiguous().view(-1), x.contiguous().view(-1)
+        uv = torch.stack([x, y], dim=-1)
+        uv = uv.unsqueeze(0).repeat(batch_size, 1, 1)
+        points_xyz = world_from_xy_depth(uv, depth, torch.inverse(extrinsics), intrinsics) - sample["trans_norm"].unsqueeze(1)
+        points_xyz = points_xyz.contiguous().view(batch_size, height, width, 3)
+        points_xyz = points_xyz.cpu().numpy()[0]
+
+        img = sample["imgs"][:, 0].cpu().numpy()
+        img = np.clip(np.transpose(img[0], (1, 2, 0)) * 255, 0, 255).astype(np.uint8)
+        points = []
+        for u in range(height):
+            for v in range(width):
+                color = img[u, v]
+                xyz = points_xyz[u, v]
+                points.append("%f %f %f %d %d %d 0\n" % (xyz[0], xyz[1], xyz[2], color[0], color[1], color[2]))
+        scene_idx = sample["scene_idx"][0].item()
+        folder = '%s/scan%d' % (save_folder, scene_idx+1)
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+        file = open('%s/%d.ply' % (folder, idx), "w")
+        file.write('''ply
+                    format ascii 1.0
+                    element vertex %d
+                    property float x
+                    property float y
+                    property float z
+                    property uchar red
+                    property uchar green
+                    property uchar blue
+                    property uchar alpha
+                    end_header
+                    %s
+                    ''' % (len(points), "".join(points)))
+        file.close()
+        print("save ply, scene:{}, idx:{} ".format(scene_idx+1, idx))
+
+
+if __name__ == '__main__':
+    pixels_to_world_example()
