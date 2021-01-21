@@ -156,10 +156,10 @@ class LatentScene(nn.Module):
         points_xyz = points_extractor(points_xyz)
         # points_xyz = self.points_encoder(points_xyz)
 
-        img_feat = self.img_encoder(img_feat)
-        img_feat = img_feat.unsqueeze(1)
-
-        points_xyz = points_xyz + img_feat
+        # img_feat = self.img_encoder(img_feat)
+        # img_feat = img_feat.unsqueeze(1)
+        #
+        # points_xyz = points_xyz + img_feat
 
         occ = phi(points_xyz)
         return occ, z
