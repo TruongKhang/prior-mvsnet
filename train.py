@@ -299,6 +299,9 @@ def val_sample(model, model_loss, optimizer, sample_cuda, is_begin, args, global
         loss.backward()
         optimizer.step()
 
+        save_images(logger, 'val', tensor2numpy({"depth_est_%d" % t: depth_est,
+                                                 "prior_depth_%d" % t: outputs["prior_depth"]}), global_step)
+
     scalar_outputs = {"loss": loss,
                       "depth_loss": depth_loss,
                       "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),

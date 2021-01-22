@@ -263,11 +263,15 @@ class MVSDataset(Dataset):
             "stage2": stage2_pjmats,
             "stage3": stage3_pjmats
         }
+        if 'scan' in scan:
+            scene_idx = int(scan.replace("scan", ""))-1
+        else:
+            scene_idx = 5
 
         return {"imgs": imgs,
                 "proj_matrices": proj_matrices_ms,
                 "depth_values": depth_values,
                 "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}",
                 "is_begin": self.list_begin[idx],
-                "scene_idx": int(scan.replace("scan", ""))-1,
-                "trans_norm": self.trans_norm[scan] if self.trans_norm is not None else np.zeros(3)}
+                "scene_idx": scene_idx,
+                "trans_norm": self.trans_norm[scan] if self.trans_norm is not None else np.zeros(3, dtype=np.float32)}

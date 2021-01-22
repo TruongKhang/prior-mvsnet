@@ -5,7 +5,7 @@ from .module import get_depth_range_samples, depth_regression, FeatureNet, CostR
 from .utils.warping import homo_warping_3D, world_from_xy_depth
 import numpy as np
 from models import hyperlayers
-# from utils import tensor2numpy, save_images
+from utils import tensor2numpy, save_images
 
 np.random.seed(9121995)
 Align_Corners_Range = False
@@ -305,11 +305,13 @@ class SeqProbMVSNet(nn.Module):
 
         embeddings = torch.cat(embeddings, dim=0) if len(embeddings) > 0 else None
         prior_vol = prior_vol.clamp(min=-12, max=0)
+        prior_conf, indices = torch.max(prior_vol, dim=1, keepdim=True)
+        prior_depth = torch.gather(depth_values, 1, indices)
         # prior_vol = F.log_softmax(prior_vol, dim=1)
         # print(prior_vol.mean().item(), prior_vol.min().item(), prior_vol.max().item())
         itg_cost_vol = likelihood_vol + prior_vol
         # print(itg_cost_vol.min().item(), itg_cost_vol.min().item())
-        return itg_cost_vol, embeddings
+        return itg_cost_vol, embeddings, prior_depth.squeeze(1)
 
     def get_depth_candidates(self, cur_depth, stage_idx, depth_interval, shape, depth_min, depth_max):
         if cur_depth.dim() == 4:
@@ -404,7 +406,7 @@ class SeqProbMVSNet(nn.Module):
                 outputs.update(outputs_stage)
             else:
 
-                log_posterior, embeddings = self.get_posterior(features_stage, (refs, srcs), depth_values_stage,
+                log_posterior, embeddings, prior_depth = self.get_posterior(features_stage, (refs, srcs), depth_values_stage,
                                                                first_view=first_view, img_feat=img_feat,
                                                                scene_ids=scene_ids, uv=uv, scale=4/stage_scale,
                                                                trans_vec=trans_vec, cost_reg=self.cost_reg[stage_idx])
@@ -435,5 +437,6 @@ class SeqProbMVSNet(nn.Module):
                 outputs["stage{}".format(stage_idx + 1)] = outputs_stage
                 outputs.update(outputs_stage)
                 outputs["scene_embedding"] = embeddings
+                outputs["prior_depth"] = prior_depth
 
         return outputs, depth.detach()
