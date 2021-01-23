@@ -423,16 +423,23 @@ class SeqProbMVSNet(nn.Module):
 
                 depth_scaled = F.interpolate(depth.unsqueeze(1), [height // 4, width // 4], mode='nearest')
                 conf_scaled = F.interpolate(conf.unsqueeze(1), [height // 4, width // 4], mode='nearest')
+
+                depth_samples = depth_scaled
+                d_intervals = torch.tensor(np.random.choice(np.arange(20, 100, 5), size=5),
+                                           device=depth_scaled.device).float()
+                depth_samples = torch.cat((depth_samples, depth_scaled - d_intervals.view((1, 5, 1, 1))), dim=1)
+                depth_samples = depth_samples.clamp(min=depth_min, max=depth_max)  # depth_samples
+
                 intrinsics[:, :2, :] = intrinsics[:, :2, :] * stage_scale / 4
                 pose = torch.inverse(extrinsics)
                 pred_vol, embeddings = self.latent_scene(
-                    {"scene_idx": scene_ids, "pose": pose, "depth": depth_scaled, "intrinsics": intrinsics,
-                     "uv": uv.repeat(depth_scaled.size(0), depth_scaled.size(1), 1), "img_feature": img_feat},
-                    ndsamples=depth_scaled.size(1), trans_vec=trans_vec)
-                pred_vol = pred_vol.squeeze(-1).view(depth_scaled.size())
+                    {"scene_idx": scene_ids, "pose": pose, "depth": depth_samples, "intrinsics": intrinsics,
+                     "uv": uv.repeat(depth_samples.size(0), depth_samples.size(1), 1), "img_feature": img_feat},
+                    ndsamples=depth_samples.size(1), trans_vec=trans_vec)
+                pred_vol = pred_vol.squeeze(-1).view(depth_samples.size())
 
                 outputs_stage = {"depth": depth, "photometric_confidence": conf,
-                                 "scaled_conf": conf_scaled.squeeze(1), "prior_prob": pred_vol.squeeze(1)}
+                                 "scaled_conf": conf_scaled, "prior_prob": pred_vol}
 
                 outputs["stage{}".format(stage_idx + 1)] = outputs_stage
                 outputs.update(outputs_stage)

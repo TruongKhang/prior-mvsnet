@@ -105,10 +105,15 @@ def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
     total_loss = total_loss + latent_loss
     if inputs["prior_prob"] is not None:
         conf = inputs["scaled_conf"]
-        prior_loss = inputs["prior_prob"] ** 2 / 2
+        prior_loss = inputs["prior_prob"][:, 0, :, :] ** 2 / 2
         masked_prior_loss = prior_loss[conf > 0.8]
         if len(masked_prior_loss) > 0:
             total_loss = total_loss + torch.mean(masked_prior_loss)
+            occ_out = inputs["prior_prob"][:, 1:, :, :]
+            occ_target = torch.zeros_like(occ_out, requires_grad=False)
+            occ_mask = (conf > 0.8).repeat(1, occ_out.size(1), 1, 1)
+            occ_loss = F.binary_cross_entropy_with_logits(occ_out[occ_mask], occ_target[occ_mask])
+            total_loss = total_loss + occ_loss
 
     depth_loss = 0.0
     mode = kwargs.get("mode")
