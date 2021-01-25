@@ -115,10 +115,10 @@ class Deconv2d(nn.Module):
             h, w = list(x.size())[2:]
             y = y[:, :, :2 * h, :2 * w].contiguous()
         if self.bn is not None:
-            x = self.bn(y)
+            y = self.bn(y)
         if self.relu:
-            x = F.relu(x, inplace=True)
-        return x
+            y = F.relu(y, inplace=True)
+        return y
 
     def init_weights(self, init_method):
         """default initialization"""
@@ -185,7 +185,7 @@ class Deconv3d(nn.Module):
        """
 
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1,
-                 relu=True, bn=False, bn_momentum=0.1, init_method="xavier", **kwargs):
+                 relu=True, bn=True, bn_momentum=0.1, init_method="xavier", **kwargs):
         super(Deconv3d, self).__init__()
         self.out_channels = out_channels
         assert stride in [1, 2]
@@ -340,7 +340,7 @@ class FeatureNet(nn.Module):
 
 
 class CostRegNet(nn.Module):
-    def __init__(self, in_channels, base_channels, last_layer=True):
+    def __init__(self, in_channels, base_channels, last_layer=True, full_res=False):
         super(CostRegNet, self).__init__()
         self.last_layer = last_layer
         self.conv0 = Conv3d(in_channels, base_channels, padding=1)
@@ -354,14 +354,25 @@ class CostRegNet(nn.Module):
         self.conv5 = Conv3d(base_channels * 4, base_channels * 8, stride=2, padding=1)
         self.conv6 = Conv3d(base_channels * 8, base_channels * 8, padding=1)
 
-        self.conv7 = Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1)
+        if full_res:
+            self.conv7 = nn.Sequential(Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1),
+                                       Conv3d(base_channels*4, base_channels*4, padding=1))
+            self.conv9 = nn.Sequential(Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1),
+                                       Conv3d(base_channels*2, base_channels*2, padding=1))
+            self.conv11 = nn.Sequential(Deconv3d(base_channels * 2, base_channels, stride=2, padding=1, output_padding=1),
+                                       Conv3d(base_channels, base_channels, padding=1))
+        else:
+            self.conv7 = Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1)
 
-        self.conv9 = Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1)
+            self.conv9 = Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1)
 
-        self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
+            self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
 
         if self.last_layer:
-            self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
+            if full_res:
+                self.prob = nn.Sequential(Conv3d(base_channels, base_channels, padding=1), nn.Conv3d(base_channels, 1, 1, stride=1, bias=False))
+            else:
+                self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
 
     def forward(self, x):
         conv0 = self.conv0(x)
@@ -400,25 +411,39 @@ def depth_regression(p, depth_values):
     return depth
 
 
+def conf_regression(p):
+    ndepths = p.size(1)
+    with torch.no_grad():
+        # photometric confidence
+        prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(p.unsqueeze(1), pad=[0, 0, 0, 0, 0, 1]),
+                                            (2, 1, 1), stride=1, padding=0).squeeze(1)
+        depth_index = depth_regression(p.detach(), depth_values=torch.arange(ndepths, device=p.device, dtype=torch.float)).long()
+        depth_index = depth_index.clamp(min=0, max=ndepths - 1)
+        conf = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1))
+    return conf.squeeze(1)
+
+
 
 def get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, max_depth=192.0, min_depth=0.0):
     #shape, (B, H, W)
     #cur_depth: (B, H, W)
     #return depth_range_values: (B, D, H, W)
-    cur_depth_min = (cur_depth - ndepth / 2 * depth_inteval_pixel)  # (B, H, W)
-    cur_depth_max = (cur_depth + ndepth / 2 * depth_inteval_pixel)
+    nl = (ndepth - 1) // 2
+    nr = ndepth - 1 - nl
+    cur_depth_min = (cur_depth - nl * depth_inteval_pixel)  # (B, H, W)
+    cur_depth_max = (cur_depth + nr * depth_inteval_pixel)
     # cur_depth_min = (cur_depth - ndepth / 2 * depth_inteval_pixel).clamp(min=0.0)   #(B, H, W)
     # cur_depth_max = (cur_depth_min + (ndepth - 1) * depth_inteval_pixel).clamp(max=max_depth)
 
     assert cur_depth.shape == torch.Size(shape), "cur_depth:{}, input shape:{}".format(cur_depth.shape, shape)
-    new_interval = (cur_depth_max - cur_depth_min) / (ndepth - 1)  # (B, H, W)
+    new_interval = torch.ones_like(cur_depth) * depth_inteval_pixel #(cur_depth_max - cur_depth_min) / (ndepth - 1)  # (B, H, W)
 
     depth_range_samples = cur_depth_min.unsqueeze(1) + (torch.arange(0, ndepth, device=cur_depth.device,
                                                                   dtype=cur_depth.dtype,
                                                                   requires_grad=False).reshape(1, -1, 1,
                                                                                                1) * new_interval.unsqueeze(1))
 
-    return depth_range_samples
+    return depth_range_samples.clamp(min=min_depth, max=max_depth)
 
 
 def get_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, device, dtype, shape,
@@ -451,7 +476,7 @@ class FCLayer(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_features, out_features),
-            nn.LayerNorm([out_features]),
+            # nn.LayerNorm([out_features]),
             nn.ReLU(inplace=True)
         )
 
@@ -516,622 +541,6 @@ class FCBlock(nn.Module):
 
     def forward(self, input):
         return self.net(input)
-
-
-# Resnet Blocks
-class ResnetBlockFC(nn.Module):
-    ''' Fully connected ResNet Block class.
-    Args:
-        size_in (int): input dimension
-        size_out (int): output dimension
-        size_h (int): hidden dimension
-    '''
-
-    def __init__(self, size_in, size_out=None, size_h=None):
-        super().__init__()
-        # Attributes
-        if size_out is None:
-            size_out = size_in
-
-        if size_h is None:
-            size_h = min(size_in, size_out)
-
-        self.size_in = size_in
-        self.size_h = size_h
-        self.size_out = size_out
-        # Submodules
-        self.fc_0 = nn.Linear(size_in, size_h)
-        self.fc_1 = nn.Linear(size_h, size_out)
-        self.actvn = nn.ReLU()
-
-        if size_in == size_out:
-            self.shortcut = None
-        else:
-            self.shortcut = nn.Linear(size_in, size_out, bias=False)
-        # Initialization
-        nn.init.zeros_(self.fc_1.weight)
-
-    def forward(self, x):
-        net = self.fc_0(self.actvn(x))
-        dx = self.fc_1(self.actvn(net))
-
-        if self.shortcut is not None:
-            x_s = self.shortcut(x)
-        else:
-            x_s = x
-
-        return x_s + dx
-
-
-class DownBlock3D(nn.Module):
-    '''A 3D convolutional downsampling block.
-    '''
-
-    def __init__(self, in_channels, out_channels, norm=nn.BatchNorm3d):
-        super().__init__()
-
-        self.net = [
-            nn.ReplicationPad3d(1),
-            nn.Conv3d(in_channels,
-                      out_channels,
-                      kernel_size=4,
-                      padding=0,
-                      stride=2,
-                      bias=False if norm is not None else True),
-        ]
-
-        if norm is not None:
-            self.net += [norm(out_channels, affine=True)]
-
-        self.net += [nn.LeakyReLU(0.2, True)]
-        self.net = nn.Sequential(*self.net)
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class UpBlock3D(nn.Module):
-    '''A 3D convolutional upsampling block.
-    '''
-
-    def __init__(self, in_channels, out_channels, norm=nn.BatchNorm3d):
-        super().__init__()
-
-        self.net = [
-            nn.ConvTranspose3d(in_channels,
-                               out_channels,
-                               kernel_size=4,
-                               stride=2,
-                               padding=1,
-                               bias=False if norm is not None else True),
-        ]
-
-        if norm is not None:
-            self.net += [norm(out_channels, affine=True)]
-
-        self.net += [nn.ReLU(True)]
-        self.net = nn.Sequential(*self.net)
-
-    def forward(self, x, skipped=None):
-        if skipped is not None:
-            input = torch.cat([skipped, x], dim=1)
-        else:
-            input = x
-        return self.net(input)
-
-
-class Conv3dSame(torch.nn.Module):
-    '''3D convolution that pads to keep spatial dimensions equal.
-    Cannot deal with stride. Only quadratic kernels (=scalar kernel_size).
-    '''
-
-    def __init__(self, in_channels, out_channels, kernel_size, bias=True, padding_layer=nn.ReplicationPad3d):
-        '''
-        :param in_channels: Number of input channels
-        :param out_channels: Number of output channels
-        :param kernel_size: Scalar. Spatial dimensions of kernel (only quadratic kernels supported).
-        :param bias: Whether or not to use bias.
-        :param padding_layer: Which padding to use. Default is reflection padding.
-        '''
-        super().__init__()
-        ka = kernel_size // 2
-        kb = ka - 1 if kernel_size % 2 == 0 else ka
-        self.net = nn.Sequential(
-            padding_layer((ka, kb, ka, kb, ka, kb)),
-            nn.Conv3d(in_channels, out_channels, kernel_size, bias=bias, stride=1)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class Conv2dSame(torch.nn.Module):
-    '''2D convolution that pads to keep spatial dimensions equal.
-    Cannot deal with stride. Only quadratic kernels (=scalar kernel_size).
-    '''
-
-    def __init__(self, in_channels, out_channels, kernel_size, bias=True, padding_layer=nn.ReflectionPad2d):
-        '''
-        :param in_channels: Number of input channels
-        :param out_channels: Number of output channels
-        :param kernel_size: Scalar. Spatial dimensions of kernel (only quadratic kernels supported).
-        :param bias: Whether or not to use bias.
-        :param padding_layer: Which padding to use. Default is reflection padding.
-        '''
-        super().__init__()
-        ka = kernel_size // 2
-        kb = ka - 1 if kernel_size % 2 == 0 else ka
-        self.net = nn.Sequential(
-            padding_layer((ka, kb, ka, kb)),
-            nn.Conv2d(in_channels, out_channels, kernel_size, bias=bias, stride=1)
-        )
-
-        self.weight = self.net[1].weight
-        self.bias = self.net[1].bias
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class UpBlock(nn.Module):
-    '''A 2d-conv upsampling block with a variety of options for upsampling, and following best practices / with
-    reasonable defaults. (LeakyReLU, kernel size multiple of stride)
-    '''
-
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 post_conv=True,
-                 use_dropout=False,
-                 dropout_prob=0.1,
-                 norm=nn.BatchNorm2d,
-                 upsampling_mode='transpose'):
-        '''
-        :param in_channels: Number of input channels
-        :param out_channels: Number of output channels
-        :param post_conv: Whether to have another convolutional layer after the upsampling layer.
-        :param use_dropout: bool. Whether to use dropout or not.
-        :param dropout_prob: Float. The dropout probability (if use_dropout is True)
-        :param norm: Which norm to use. If None, no norm is used. Default is Batchnorm with affinity.
-        :param upsampling_mode: Which upsampling mode:
-                transpose: Upsampling with stride-2, kernel size 4 transpose convolutions.
-                bilinear: Feature map is upsampled with bilinear upsampling, then a conv layer.
-                nearest: Feature map is upsampled with nearest neighbor upsampling, then a conv layer.
-                shuffle: Feature map is upsampled with pixel shuffling, then a conv layer.
-        '''
-        super().__init__()
-
-        net = list()
-
-        if upsampling_mode == 'transpose':
-            net += [nn.ConvTranspose2d(in_channels,
-                                       out_channels,
-                                       kernel_size=4,
-                                       stride=2,
-                                       padding=1,
-                                       bias=True if norm is None else False)]
-        elif upsampling_mode == 'bilinear':
-            net += [nn.UpsamplingBilinear2d(scale_factor=2)]
-            net += [
-                Conv2dSame(in_channels, out_channels, kernel_size=3, bias=True if norm is None else False)]
-        elif upsampling_mode == 'nearest':
-            net += [nn.UpsamplingNearest2d(scale_factor=2)]
-            net += [
-                Conv2dSame(in_channels, out_channels, kernel_size=3, bias=True if norm is None else False)]
-        elif upsampling_mode == 'shuffle':
-            net += [nn.PixelShuffle(upscale_factor=2)]
-            net += [
-                Conv2dSame(in_channels // 4, out_channels, kernel_size=3,
-                           bias=True if norm is None else False)]
-        else:
-            raise ValueError("Unknown upsampling mode!")
-
-        if norm is not None:
-            net += [norm(out_channels, affine=True)]
-
-        net += [nn.ReLU(True)]
-
-        if use_dropout:
-            net += [nn.Dropout2d(dropout_prob, False)]
-
-        if post_conv:
-            net += [Conv2dSame(out_channels,
-                               out_channels,
-                               kernel_size=3,
-                               bias=True if norm is None else False)]
-
-            if norm is not None:
-                net += [norm(out_channels, affine=True)]
-
-            net += [nn.ReLU(True)]
-
-            if use_dropout:
-                net += [nn.Dropout2d(0.1, False)]
-
-        self.net = nn.Sequential(*net)
-
-    def forward(self, x, skipped=None):
-        if skipped is not None:
-            input = torch.cat([skipped, x], dim=1)
-        else:
-            input = x
-        return self.net(input)
-
-
-class DownBlock(nn.Module):
-    '''A 2D-conv downsampling block following best practices / with reasonable defaults
-    (LeakyReLU, kernel size multiple of stride)
-    '''
-
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 prep_conv=True,
-                 middle_channels=None,
-                 use_dropout=False,
-                 dropout_prob=0.1,
-                 norm=nn.BatchNorm2d):
-        '''
-        :param in_channels: Number of input channels
-        :param out_channels: Number of output channels
-        :param prep_conv: Whether to have another convolutional layer before the downsampling layer.
-        :param middle_channels: If prep_conv is true, this sets the number of channels between the prep and downsampling
-                                convs.
-        :param use_dropout: bool. Whether to use dropout or not.
-        :param dropout_prob: Float. The dropout probability (if use_dropout is True)
-        :param norm: Which norm to use. If None, no norm is used. Default is Batchnorm with affinity.
-        '''
-        super().__init__()
-
-        if middle_channels is None:
-            middle_channels = in_channels
-
-        net = list()
-
-        if prep_conv:
-            net += [nn.ReflectionPad2d(1),
-                    nn.Conv2d(in_channels,
-                              middle_channels,
-                              kernel_size=3,
-                              padding=0,
-                              stride=1,
-                              bias=True if norm is None else False)]
-
-            if norm is not None:
-                net += [norm(middle_channels, affine=True)]
-
-            net += [nn.LeakyReLU(0.2, True)]
-
-            if use_dropout:
-                net += [nn.Dropout2d(dropout_prob, False)]
-
-        net += [nn.ReflectionPad2d(1),
-                nn.Conv2d(middle_channels,
-                          out_channels,
-                          kernel_size=4,
-                          padding=0,
-                          stride=2,
-                          bias=True if norm is None else False)]
-
-        if norm is not None:
-            net += [norm(out_channels, affine=True)]
-
-        net += [nn.LeakyReLU(0.2, True)]
-
-        if use_dropout:
-            net += [nn.Dropout2d(dropout_prob, False)]
-
-        self.net = nn.Sequential(*net)
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class Unet3d(nn.Module):
-    '''A 3d-Unet implementation with sane defaults.
-    '''
-
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 nf0,
-                 num_down,
-                 max_channels,
-                 norm=nn.BatchNorm3d,
-                 outermost_linear=False):
-        '''
-        :param in_channels: Number of input channels
-        :param out_channels: Number of output channels
-        :param nf0: Number of features at highest level of U-Net
-        :param num_down: Number of downsampling stages.
-        :param max_channels: Maximum number of channels (channels multiply by 2 with every downsampling stage)
-        :param norm: Which norm to use. If None, no norm is used. Default is Batchnorm with affinity.
-        :param outermost_linear: Whether the output layer should be a linear layer or a nonlinear one.
-        '''
-        super().__init__()
-
-        assert (num_down > 0), "Need at least one downsampling layer in UNet3d."
-
-        # Define the in block
-        self.in_layer = [Conv3dSame(in_channels, nf0, kernel_size=3, bias=False)]
-
-        if norm is not None:
-            self.in_layer += [norm(nf0, affine=True)]
-
-        self.in_layer += [nn.LeakyReLU(0.2, True)]
-        self.in_layer = nn.Sequential(*self.in_layer)
-
-        # Define the center UNet block. The feature map has height and width 1 --> no batchnorm.
-        self.unet_block = UnetSkipConnectionBlock3d(int(min(2 ** (num_down - 1) * nf0, max_channels)),
-                                                    int(min(2 ** (num_down - 1) * nf0, max_channels)),
-                                                    norm=None)
-        for i in list(range(0, num_down - 1))[::-1]:
-            self.unet_block = UnetSkipConnectionBlock3d(int(min(2 ** i * nf0, max_channels)),
-                                                        int(min(2 ** (i + 1) * nf0, max_channels)),
-                                                        submodule=self.unet_block,
-                                                        norm=norm)
-
-        # Define the out layer. Each unet block concatenates its inputs with its outputs - so the output layer
-        # automatically receives the output of the in_layer and the output of the last unet layer.
-        self.out_layer = [Conv3dSame(2 * nf0,
-                                     out_channels,
-                                     kernel_size=3,
-                                     bias=outermost_linear)]
-
-        if not outermost_linear:
-            if norm is not None:
-                self.out_layer += [norm(out_channels, affine=True)]
-            self.out_layer += [nn.ReLU(True)]
-        self.out_layer = nn.Sequential(*self.out_layer)
-
-    def forward(self, x):
-        in_layer = self.in_layer(x)
-        unet = self.unet_block(in_layer)
-        out_layer = self.out_layer(unet)
-        return out_layer
-
-
-class UnetSkipConnectionBlock3d(nn.Module):
-    '''Helper class for building a 3D unet.
-    '''
-
-    def __init__(self,
-                 outer_nc,
-                 inner_nc,
-                 norm=nn.BatchNorm3d,
-                 submodule=None):
-        super().__init__()
-
-        if submodule is None:
-            model = [DownBlock3D(outer_nc, inner_nc, norm=norm),
-                     UpBlock3D(inner_nc, outer_nc, norm=norm)]
-        else:
-            model = [DownBlock3D(outer_nc, inner_nc, norm=norm),
-                     submodule,
-                     UpBlock3D(2 * inner_nc, outer_nc, norm=norm)]
-
-        self.model = nn.Sequential(*model)
-
-    def forward(self, x):
-        forward_passed = self.model(x)
-        return torch.cat([x, forward_passed], 1)
-
-
-class UnetSkipConnectionBlock(nn.Module):
-    '''Helper class for building a 2D unet.
-    '''
-
-    def __init__(self,
-                 outer_nc,
-                 inner_nc,
-                 upsampling_mode,
-                 norm=nn.BatchNorm2d,
-                 submodule=None,
-                 use_dropout=False,
-                 dropout_prob=0.1):
-        super().__init__()
-
-        if submodule is None:
-            model = [DownBlock(outer_nc, inner_nc, use_dropout=use_dropout, dropout_prob=dropout_prob, norm=norm),
-                     UpBlock(inner_nc, outer_nc, use_dropout=use_dropout, dropout_prob=dropout_prob, norm=norm,
-                             upsampling_mode=upsampling_mode)]
-        else:
-            model = [DownBlock(outer_nc, inner_nc, use_dropout=use_dropout, dropout_prob=dropout_prob, norm=norm),
-                     submodule,
-                     UpBlock(2 * inner_nc, outer_nc, use_dropout=use_dropout, dropout_prob=dropout_prob, norm=norm,
-                             upsampling_mode=upsampling_mode)]
-
-        self.model = nn.Sequential(*model)
-
-    def forward(self, x):
-        forward_passed = self.model(x)
-        return torch.cat([x, forward_passed], 1)
-
-
-class Unet(nn.Module):
-    '''A 2d-Unet implementation with sane defaults.
-    '''
-
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 nf0,
-                 num_down,
-                 max_channels,
-                 use_dropout,
-                 upsampling_mode='transpose',
-                 dropout_prob=0.1,
-                 norm=nn.BatchNorm2d,
-                 outermost_linear=False):
-        '''
-        :param in_channels: Number of input channels
-        :param out_channels: Number of output channels
-        :param nf0: Number of features at highest level of U-Net
-        :param num_down: Number of downsampling stages.
-        :param max_channels: Maximum number of channels (channels multiply by 2 with every downsampling stage)
-        :param use_dropout: Whether to use dropout or no.
-        :param dropout_prob: Dropout probability if use_dropout=True.
-        :param upsampling_mode: Which type of upsampling should be used. See "UpBlock" for documentation.
-        :param norm: Which norm to use. If None, no norm is used. Default is Batchnorm with affinity.
-        :param outermost_linear: Whether the output layer should be a linear layer or a nonlinear one.
-        '''
-        super().__init__()
-
-        assert (num_down > 0), "Need at least one downsampling layer in UNet."
-
-        # Define the in block
-        self.in_layer = [Conv2dSame(in_channels, nf0, kernel_size=3, bias=True if norm is None else False)]
-        if norm is not None:
-            self.in_layer += [norm(nf0, affine=True)]
-        self.in_layer += [nn.LeakyReLU(0.2, True)]
-
-        if use_dropout:
-            self.in_layer += [nn.Dropout2d(dropout_prob)]
-        self.in_layer = nn.Sequential(*self.in_layer)
-
-        # Define the center UNet block
-        self.unet_block = UnetSkipConnectionBlock(min(2 ** (num_down-1) * nf0, max_channels),
-                                                  min(2 ** (num_down-1) * nf0, max_channels),
-                                                  use_dropout=use_dropout,
-                                                  dropout_prob=dropout_prob,
-                                                  norm=None, # Innermost has no norm (spatial dimension 1)
-                                                  upsampling_mode=upsampling_mode)
-
-        for i in list(range(0, num_down - 1))[::-1]:
-            self.unet_block = UnetSkipConnectionBlock(min(2 ** i * nf0, max_channels),
-                                                      min(2 ** (i + 1) * nf0, max_channels),
-                                                      use_dropout=use_dropout,
-                                                      dropout_prob=dropout_prob,
-                                                      submodule=self.unet_block,
-                                                      norm=norm,
-                                                      upsampling_mode=upsampling_mode)
-
-        # Define the out layer. Each unet block concatenates its inputs with its outputs - so the output layer
-        # automatically receives the output of the in_layer and the output of the last unet layer.
-        self.out_layer = [Conv2dSame(2 * nf0,
-                                     out_channels,
-                                     kernel_size=3,
-                                     bias=outermost_linear or (norm is None))]
-
-        if not outermost_linear:
-            if norm is not None:
-                self.out_layer += [norm(out_channels, affine=True)]
-            self.out_layer += [nn.ReLU(True)]
-
-            if use_dropout:
-                self.out_layer += [nn.Dropout2d(dropout_prob)]
-        self.out_layer = nn.Sequential(*self.out_layer)
-
-        self.out_layer_weight = self.out_layer[0].weight
-
-    def forward(self, x):
-        in_layer = self.in_layer(x)
-        unet = self.unet_block(in_layer)
-        out_layer = self.out_layer(unet)
-        return out_layer
-
-
-class Identity(nn.Module):
-    '''Helper module to allow Downsampling and Upsampling nets to default to identity if they receive an empty list.'''
-
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input):
-        return input
-
-
-class DownsamplingNet(nn.Module):
-    '''A subnetwork that downsamples a 2D feature map with strided convolutions.
-    '''
-
-    def __init__(self,
-                 per_layer_out_ch,
-                 in_channels,
-                 use_dropout,
-                 dropout_prob=0.1,
-                 last_layer_one=False,
-                 norm=nn.BatchNorm2d):
-        '''
-        :param per_layer_out_ch: python list of integers. Defines the number of output channels per layer. Length of
-                                list defines number of downsampling steps (each step dowsamples by factor of 2.)
-        :param in_channels: Number of input channels.
-        :param use_dropout: Whether or not to use dropout.
-        :param dropout_prob: Dropout probability.
-        :param last_layer_one: Whether the output of the last layer will have a spatial size of 1. In that case,
-                               the last layer will not have batchnorm, else, it will.
-        :param norm: Which norm to use. Defaults to BatchNorm.
-        '''
-        super().__init__()
-
-        if not len(per_layer_out_ch):
-            self.downs = Identity()
-        else:
-            self.downs = list()
-            self.downs.append(DownBlock(in_channels, per_layer_out_ch[0], use_dropout=use_dropout,
-                                        dropout_prob=dropout_prob, middle_channels=per_layer_out_ch[0], norm=norm))
-            for i in range(0, len(per_layer_out_ch) - 1):
-                if last_layer_one and (i == len(per_layer_out_ch) - 2):
-                    norm = None
-                self.downs.append(DownBlock(per_layer_out_ch[i],
-                                            per_layer_out_ch[i + 1],
-                                            dropout_prob=dropout_prob,
-                                            use_dropout=use_dropout,
-                                            norm=norm))
-            self.downs = nn.Sequential(*self.downs)
-
-    def forward(self, input):
-        return self.downs(input)
-
-
-class UpsamplingNet(nn.Module):
-    '''A subnetwork that upsamples a 2D feature map with a variety of upsampling options.
-    '''
-
-    def __init__(self,
-                 per_layer_out_ch,
-                 in_channels,
-                 upsampling_mode,
-                 use_dropout,
-                 dropout_prob=0.1,
-                 first_layer_one=False,
-                 norm=nn.BatchNorm2d):
-        '''
-        :param per_layer_out_ch: python list of integers. Defines the number of output channels per layer. Length of
-                                list defines number of upsampling steps (each step upsamples by factor of 2.)
-        :param in_channels: Number of input channels.
-        :param upsampling_mode: Mode of upsampling. For documentation, see class "UpBlock"
-        :param use_dropout: Whether or not to use dropout.
-        :param dropout_prob: Dropout probability.
-        :param first_layer_one: Whether the input to the last layer will have a spatial size of 1. In that case,
-                               the first layer will not have a norm, else, it will.
-        :param norm: Which norm to use. Defaults to BatchNorm.
-        '''
-        super().__init__()
-
-        if not len(per_layer_out_ch):
-            self.ups = Identity()
-        else:
-            self.ups = list()
-            self.ups.append(UpBlock(in_channels,
-                                    per_layer_out_ch[0],
-                                    use_dropout=use_dropout,
-                                    dropout_prob=dropout_prob,
-                                    norm=None if first_layer_one else norm,
-                                    upsampling_mode=upsampling_mode))
-            for i in range(0, len(per_layer_out_ch) - 1):
-                self.ups.append(
-                    UpBlock(per_layer_out_ch[i],
-                            per_layer_out_ch[i + 1],
-                            use_dropout=use_dropout,
-                            dropout_prob=dropout_prob,
-                            norm=norm,
-                            upsampling_mode=upsampling_mode))
-            self.ups = nn.Sequential(*self.ups)
-
-    def forward(self, input):
-        return self.ups(input)
-
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from tensorboardX import SummaryWriter
 from datasets import find_dataset_def
 from models import *
 from utils import *
-from models.losses import cas_mvsnet_loss
+from models.losses import cas_mvsnet_loss, seq_prob_loss
 import torch.distributed as dist
 import math
 
@@ -63,6 +63,7 @@ parser.add_argument('--opt-level', type=str, default="O0")
 parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
 parser.add_argument('--loss-scale', type=str, default=None)
 parser.add_argument('--few_shots', type=int, default=0)
+parser.add_argument('--depth_scale', type=float, default=1.0)
 
 
 num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
@@ -89,22 +90,23 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
 
             # modified from the original by Khang
             sample = tocuda(sample)
-            is_begin = sample['is_begin'].type(torch.uint8)
+            is_begin = sample['is_begin'].type(torch.bool)
 
-            loss, scalar_outputs, image_outputs = train_sample(model, model_loss, optimizer, sample, is_begin, args)
+            loss, scalar_outputs, image_outputs = train_sample(model, model_loss, optimizer, sample,
+                                                               is_begin, args, global_step=global_step)
 
             lr_scheduler.step()
             if (not is_distributed) or (dist.get_rank() == 0):
                 if do_summary:
-                    save_scalars(logger, 'train', scalar_outputs, global_step)
-                    save_images(logger, 'train', image_outputs, global_step)
+                    # save_scalars(logger, 'train', scalar_outputs, global_step)
+                    # save_images(logger, 'train', image_outputs, global_step)
                     print(
                        "Epoch {}/{}, Iter {}/{}, lr {:.6f}, train loss = {:.3f}, depth loss = {:.3f}, time = {:.3f}".format(
                            epoch_idx, args.epochs, batch_idx, len(TrainImgLoader),
                            optimizer.param_groups[0]["lr"], loss,
                            scalar_outputs['depth_loss'],
                            time.time() - start_time))
-                del scalar_outputs, image_outputs
+                del scalar_outputs #, image_outputs
 
         # checkpoint
         chkpt_file = "{}/model_{:0>6}.ckpt".format(args.logdir, epoch_idx)
@@ -112,25 +114,29 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
             if (epoch_idx + 1) % args.save_freq == 0:
                 torch.save({
                     'epoch': epoch_idx,
-                    'model': model.module.state_dict(),
+                    'model': model.state_dict(),
                     'optimizer': optimizer.state_dict()}, chkpt_file)
         gc.collect()
+        # chkpt_file = "{}/model_{:0>6}.ckpt".format(args.logdir, 15)
 
         if (epoch_idx % args.eval_freq == 0) or (epoch_idx == args.epochs - 1):
-            val_model = CascadeMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
+            val_model = SeqProbMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
                                       depth_interals_ratio=[float(d_i) for d_i in args.depth_inter_r.split(",") if d_i],
                                       share_cr=args.share_cr,
                                       cr_base_chs=[int(ch) for ch in args.cr_base_chs.split(",") if ch],
-                                      grad_method=args.grad_method, is_traning=False)
+                                      grad_method=args.grad_method, is_training=False)
             val_model.to(torch.device(args.device))
-            val_model_loss = cas_mvsnet_loss
+            val_model_loss = seq_prob_loss
 
-            val_optimizer = optim.Adam(filter(lambda p: p.requires_grad, val_model.parameters()), lr=0.0001,
-                                       betas=(0.9, 0.999), weight_decay=args.wd)
+            val_optimizer = optim.Adam(filter(lambda p: p.requires_grad, val_model.latent_scene.parameters()),
+                                       lr=0.0001, betas=(0.9, 0.999), weight_decay=args.wd)
             # load checkpoint file specified by args.loadckpt
             print("loading model {}".format(chkpt_file))
             val_state_dict = torch.load(chkpt_file)
-            val_model.load_state_dict(val_state_dict['model'])
+            new_state_dict = {}
+            for k, v in val_state_dict['model'].items():
+                new_state_dict[k.replace('module.', '')] = v
+            val_model.load_state_dict(new_state_dict)
 
             validate(val_model, val_model_loss, val_optimizer, TestImgLoader, epoch_idx, args)
             del val_model, val_optimizer
@@ -140,6 +146,9 @@ def validate(model, model_loss, optimizer, ValImgLoader, epoch_idx, args):
     # testing
     avg_test_scalars = DictAverageMeter()
     cnt = 0
+    # name_params = [n for n, p in model.named_parameters() if p.requires_grad]
+    # print("Trainable parameters: ", len(name_params))
+    # print(name_params)
     for batch_idx, sample in enumerate(ValImgLoader):
         start_time = time.time()
         global_step = len(ValImgLoader) * epoch_idx + batch_idx
@@ -147,17 +156,20 @@ def validate(model, model_loss, optimizer, ValImgLoader, epoch_idx, args):
 
         # modified from the original by Khang
         sample = tocuda(sample)
-        is_begin = sample['is_begin'].type(torch.uint8)
-        cnt = 0 if is_begin.item() == 1 else cnt + 1
-        if cnt >= args.few_shots:
-            loss, scalar_outputs, image_outputs = test_sample_depth(model, model_loss, optimizer, sample, is_begin, args)
-        else:
-            loss, scalar_outputs, image_outputs = train_sample(model, model_loss, optimizer, sample, is_begin, args)
+        is_begin = sample['is_begin'].type(torch.bool)
+        # cnt = 0 if is_begin.item() == 1 else cnt + 1
+        # if cnt >= args.few_shots:
+        #     loss, scalar_outputs, image_outputs = test_sample_depth(model, model_loss, sample, is_begin, args)
+        # else:
+        #     loss, scalar_outputs, image_outputs = train_sample(model, model_loss, optimizer, sample,
+        #                                                        is_begin, args, is_testing=True)
+        loss, scalar_outputs, image_outputs = val_sample(model, model_loss, optimizer, sample, is_begin,
+                                                         args, global_step=global_step)
 
         if (not is_distributed) or (dist.get_rank() == 0):
             if do_summary:
-                save_scalars(logger, 'test', scalar_outputs, global_step)
-                save_images(logger, 'test', image_outputs, global_step)
+                # save_scalars(logger, 'test', scalar_outputs, global_step)
+                # save_images(logger, 'test', image_outputs, global_step)
                 print("Epoch {}/{}, Iter {}/{}, test loss = {:.3f}, depth loss = {:.3f}, time = {:3f}".format(
                     epoch_idx, args.epochs,
                     batch_idx,
@@ -165,11 +177,11 @@ def validate(model, model_loss, optimizer, ValImgLoader, epoch_idx, args):
                     scalar_outputs["depth_loss"],
                     time.time() - start_time))
             avg_test_scalars.update(scalar_outputs)
-            del scalar_outputs, image_outputs
+            del scalar_outputs #, image_outputs
 
-    # if (not is_distributed) or (dist.get_rank() == 0):
-    #     save_scalars(logger, 'fulltest', avg_test_scalars.mean(), global_step)
-    #     print("avg_test_scalars:", avg_test_scalars.mean())
+    if (not is_distributed) or (dist.get_rank() == 0):
+        # save_scalars(logger, 'fulltest', avg_test_scalars.mean(), global_step)
+        print("avg_test_scalars:", avg_test_scalars.mean())
     gc.collect()
 
 
@@ -189,59 +201,140 @@ def test(model, model_loss, TestImgLoader, args):
         print("final", avg_test_scalars.mean())
 
 
-def train_sample(model, model_loss, optimizer, sample_cuda, is_begin, args):
+def train_sample(model, model_loss, optimizer, sample_cuda, is_begin, args, is_testing=False, global_step=0):
     model.train()
-    optimizer.zero_grad()
+
+    depth_est, loss, depth_loss = None, None, None
 
     # sample_cuda = tocuda(sample)
     depth_gt_ms = sample_cuda["depth"]
     mask_ms = sample_cuda["mask"]
 
     num_stage = len([int(nd) for nd in args.ndepths.split(",") if nd])
-    depth_gt = depth_gt_ms["stage{}".format(num_stage)]
+    depth_gt = depth_gt_ms["stage{}".format(num_stage)] * args.depth_scale
     mask = mask_ms["stage{}".format(num_stage)]
 
-    # prev_ref_matrices, itg_vol = prev_state
+    for t in range(4):
+        # print(t)
+        optimizer.zero_grad()
+        # prev_ref_matrices, itg_vol = prev_state
 
-    outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
-                    first_view=is_begin, gt_depth=depth_gt_ms, gt_mask=mask_ms, scene_ids=sample_cuda["scene_idx"])
-    depth_est = outputs["depth"].detach()
+        outputs, depth_est = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
+                                   first_view=is_begin, scene_ids=sample_cuda["scene_idx"], depth=depth_est,
+                                   iter=t, trans_vec=sample_cuda["trans_norm"])
 
-    loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms,
-                                  dlossw=[float(e) for e in args.dlossw.split(",") if e])
-
-    if is_distributed and args.using_apex:
-        with amp.scale_loss(loss, optimizer) as scaled_loss:
-            scaled_loss.backward()
-    else:
+        loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms,
+                                      dlossw=[float(e) for e in args.dlossw.split(",") if e], training=(not is_testing))
         loss.backward()
 
-    optimizer.step()
+        optimizer.step()
+
+    # depth_est = model.depth_estimation.depth.data * args.depth_scale
+    # depth_loss = F.smooth_l1_loss(depth_est[mask > 0.5], depth_gt[mask > 0.5], reduction='mean')
+
+    if is_testing:
+        scalar_outputs = {"loss": loss,
+                          "depth_loss": depth_loss,
+                          "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+                          "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
+                          "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
+                          "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),
+                          "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 14),
+                          "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 20),
+
+                          "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, 2.0]),
+                          "thres4mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [2.0, 4.0]),
+                          "thres8mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [4.0, 8.0]),
+                          "thres14mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [8.0, 14.0]),
+                          "thres20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [14.0, 20.0]),
+                          "thres>20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [20.0, 1e5])}
+    else:
+        scalar_outputs = {"loss": loss,
+                          "depth_loss": depth_loss,
+                          "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+                          "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
+                          "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
+                          "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8)}
+
+    # image_outputs = {"depth_est": depth_est * mask,
+    #                  "depth_est_nomask": depth_est,
+    #                  "depth_gt": sample_cuda["depth"]["stage1"].cpu(),
+    #                  "ref_img": sample_cuda["imgs"][:, 0].cpu(),
+    #                  "mask": sample_cuda["mask"]["stage1"].cpu(),
+    #                  "errormap": (depth_est - depth_gt).abs() * mask,
+    #                  }
+
+    if is_distributed:
+        scalar_outputs = reduce_scalar_outputs(scalar_outputs)
+
+    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), None #tensor2numpy(image_outputs)
+
+
+def val_sample(model, model_loss, optimizer, sample_cuda, is_begin, args, global_step=None):
+    if num_gpus > 1:
+        model_val = model.module
+    else:
+        model_val = model
+
+    depth_est, loss, depth_loss = None, None, None
+
+    model_val.train()
+    optimizer.zero_grad()
+    #model_val.eval()
+
+    # sample_cuda = tocuda(sample)
+    depth_gt_ms = sample_cuda["depth"]
+    mask_ms = sample_cuda["mask"]
+
+    num_stage = len([int(nd) for nd in args.ndepths.split(",") if nd])
+    depth_gt = depth_gt_ms["stage{}".format(num_stage)] * args.depth_scale
+    mask = mask_ms["stage{}".format(num_stage)]
+    for t in range(5):
+        outputs, depth_est = model_val(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
+                                       first_view=is_begin, scene_ids=sample_cuda["scene_idx"], depth=depth_est,
+                                       trans_vec=sample_cuda["trans_norm"], iter=t)
+
+        loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms,
+                                  dlossw=[float(e) for e in args.dlossw.split(",") if e], training=False)
+        loss.backward()
+        optimizer.step()
+
+        save_images(logger, 'val', tensor2numpy({"depth_est_%d" % t: depth_est,
+                                                 "prior_depth_%d" % t: outputs["prior_depth"]}), global_step)
 
     scalar_outputs = {"loss": loss,
                       "depth_loss": depth_loss,
                       "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
                       "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
                       "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
-                      "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),}
+                      "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),
+                      "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 14),
+                      "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 20),
+
+                      "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, 2.0]),
+                      "thres4mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [2.0, 4.0]),
+                      "thres8mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [4.0, 8.0]),
+                      "thres14mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [8.0, 14.0]),
+                      "thres20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [14.0, 20.0]),
+                      "thres>20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [20.0, 1e5]),
+                    }
 
     image_outputs = {"depth_est": depth_est * mask,
                      "depth_est_nomask": depth_est,
                      "depth_gt": sample_cuda["depth"]["stage1"].cpu(),
                      "ref_img": sample_cuda["imgs"][:, 0].cpu(),
                      "mask": sample_cuda["mask"]["stage1"].cpu(),
-                     "errormap": (depth_est - depth_gt).abs() * mask,
-                     }
+                     "errormap": (depth_est - depth_gt).abs() * mask}
 
-    if is_distributed:
-        scalar_outputs = reduce_scalar_outputs(scalar_outputs)
+    # if is_distributed:
+    #     scalar_outputs = reduce_scalar_outputs(scalar_outputs)
 
     return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs)
 
 
 @make_nograd_func
 def test_sample_depth(model, model_loss, sample_cuda, is_begin, args):
-    if is_distributed:
+    if num_gpus > 1:
         model_eval = model.module
     else:
         model_eval = model
@@ -252,12 +345,12 @@ def test_sample_depth(model, model_loss, sample_cuda, is_begin, args):
     mask_ms = sample_cuda["mask"]
 
     num_stage = len([int(nd) for nd in args.ndepths.split(",") if nd])
-    depth_gt = depth_gt_ms["stage{}".format(num_stage)]
+    depth_gt = depth_gt_ms["stage{}".format(num_stage)] * args.depth_scale
     mask = mask_ms["stage{}".format(num_stage)]
 
     outputs = model_eval(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
                          first_view=is_begin, gt_depth=depth_gt_ms, gt_mask=mask_ms, scene_ids=sample_cuda["scene_idx"])
-    depth_est = outputs["depth"].detach()
+    depth_est = outputs["depth"].detach() * args.depth_scale
 
     loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms, dlossw=[float(e) for e in args.dlossw.split(",") if e])
 
@@ -368,13 +461,15 @@ if __name__ == '__main__':
         print_args(args)
 
     # model, optimizer
-    model = CascadeMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
+    model = SeqProbMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
                           depth_interals_ratio=[float(d_i) for d_i in args.depth_inter_r.split(",") if d_i],
                           share_cr=args.share_cr,
                           cr_base_chs=[int(ch) for ch in args.cr_base_chs.split(",") if ch],
                           grad_method=args.grad_method)
     model.to(device)
-    model_loss = cas_mvsnet_loss
+    ckpt = torch.load('pretrained_model.ckpt')
+    model.load_state_dict(ckpt['model'])
+    model_loss = seq_prob_loss #cas_mvsnet_loss
 
     if args.sync_bn:
         import apex
@@ -392,7 +487,10 @@ if __name__ == '__main__':
         loadckpt = os.path.join(args.logdir, saved_models[-1])
         print("resuming", loadckpt)
         state_dict = torch.load(loadckpt, map_location=torch.device("cpu"))
-        model.load_state_dict(state_dict['model'])
+        new_state_dict = {}
+        for k, v in state_dict['model'].items():
+            new_state_dict[k.replace('module.', '')] = v
+        model.load_state_dict(new_state_dict)
         optimizer.load_state_dict(state_dict['optimizer'])
         start_epoch = state_dict['epoch'] + 1
     elif args.loadckpt:
@@ -424,31 +522,16 @@ if __name__ == '__main__':
     else:
         if torch.cuda.is_available():
             print("Let's use", torch.cuda.device_count(), "GPUs!")
-            model = nn.DataParallel(model)
+            if torch.cuda.device_count() > 1:
+                model = nn.DataParallel(model)
 
     # dataset, dataloader
     MVSDataset = find_dataset_def(args.dataset)
     train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 3, args.numdepth, args.interval_scale,
-                               shuffle=True, seq_size=49, batch_size=args.batch_size)
+                               shuffle=True, seq_size=7, batch_size=args.batch_size, depth_scale=args.depth_scale)
     test_dataset = MVSDataset(args.testpath, args.testlist, "val", 3, args.numdepth, args.interval_scale,
-                              shuffle=False, seq_size=49, batch_size=1)
-    #
-    # if is_distributed:
-    #     train_sampler = torch.utils.data.DistributedSampler(train_dataset, num_replicas=dist.get_world_size(),
-    #                                                         rank=dist.get_rank())
-    #     test_sampler = torch.utils.data.DistributedSampler(test_dataset, num_replicas=dist.get_world_size(),
-    #                                                        rank=dist.get_rank())
-    #
-    #     TrainImgLoader = DataLoader(train_dataset, args.batch_size, sampler=train_sampler, num_workers=1,
-    #                                 drop_last=True,
-    #                                 pin_memory=args.pin_m)
-    #     TestImgLoader = DataLoader(test_dataset, args.batch_size, sampler=test_sampler, num_workers=1, drop_last=False,
-    #                                pin_memory=args.pin_m)
-    # else:
-        # TrainImgLoader = DataLoader(train_dataset, args.batch_size, shuffle=True, num_workers=1, drop_last=True,
-        #                             pin_memory=args.pin_m)
-        # TestImgLoader = DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=1, drop_last=False,
-        #                            pin_memory=args.pin_m)
+                              shuffle=False, seq_size=7, batch_size=1, depth_scale=args.depth_scale)
+
     train_sampler = torch.utils.data.SequentialSampler(train_dataset)
     TrainImgLoader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, sampler=train_sampler,
                                 num_workers=4, pin_memory=args.pin_m)

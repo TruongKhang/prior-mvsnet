@@ -128,3 +128,11 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .idea/
+checkpoints/
+*.ckpt
+outputs*
+results
+fusibile
+visualization/final_model_000049.ckpt
+move.py
+lists/dtu/subsub_train.txt

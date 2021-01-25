@@ -39,6 +39,16 @@ class MVSDataset(Dataset):
             else:
                 self.spliter.append((name, np.arange(num_imgs)))
         print("dataset", self.mode, "metas:", total_imgs)
+        self.trans_norm = {}
+        scale_file = os.path.join(self.datapath, 'scale_dtu.txt')
+        if not os.path.exists(scale_file):
+            self.trans_norm = None
+        else:
+            with open(scale_file) as fp:
+                for line in fp:
+                    line = line.strip().split(':')
+                    scan = line[0]
+                    self.trans_norm[scan] = np.array(line[1].split(','), dtype=np.float32)
 
         self.generate_indices()
 
@@ -226,6 +236,10 @@ class MVSDataset(Dataset):
             img = self.read_img(img_filename)
 
             intrinsics, extrinsics, depth_min, depth_interval = self.read_cam_file(proj_mat_filename)
+            depth_scale = self.kwargs['depth_scale']
+            depth_min /= depth_scale
+            depth_interval /= depth_scale
+            extrinsics[:4, [3]] /= depth_scale
 
             proj_mat = np.zeros(shape=(2, 4, 4), dtype=np.float32)  #
             proj_mat[0, :4, :4] = extrinsics
@@ -236,7 +250,8 @@ class MVSDataset(Dataset):
             if i == 0:  # reference view
                 mask_read_ms = self.read_mask_hr(mask_filename_hr)
                 depth_ms = self.read_depth_hr(depth_filename_hr)
-
+                for stage in depth_ms.keys():
+                    depth_ms[stage] /= depth_scale
                 #get depth values
                 depth_max = depth_interval * self.ndepths + depth_min
                 depth_values = np.arange(depth_min, depth_max, depth_interval, dtype=np.float32)
@@ -244,7 +259,6 @@ class MVSDataset(Dataset):
                 mask = mask_read_ms
 
             imgs.append(img)
-
         #all
         imgs = np.stack(imgs).transpose([0, 3, 1, 2])
         #ms proj_mats
@@ -266,4 +280,5 @@ class MVSDataset(Dataset):
                 "depth_values": depth_values,
                 "mask": mask,
                 "is_begin": self.list_begin[idx],
-                "scene_idx": int(scan.replace("scan", ""))-1}
+                "scene_idx": int(scan.replace("scan", ""))-1,
+                "trans_norm": self.trans_norm[scan] if self.trans_norm is not None else np.zeros(3)}
