@@ -49,7 +49,6 @@ class Trainer(BaseTrainer):
             # modified from the original by Khang
             sample_cuda = tocuda(sample)
             is_begin = sample_cuda['is_begin'].type(torch.uint8)
-
             depth_gt_ms = sample_cuda["depth"]
             mask_ms = sample_cuda["mask"]
 
@@ -57,15 +56,18 @@ class Trainer(BaseTrainer):
             depth_gt = depth_gt_ms["stage{}".format(num_stage)] * self.depth_scale
             mask = mask_ms["stage{}".format(num_stage)]
 
-            self.optimizer.zero_grad()
-            # prev_ref_matrices, itg_vol = prev_state
+            # self.optimizer.zero_grad()
+            for otm in self.optimizer:
+                otm.zero_grad()
 
             outputs, depth_est = self.model(sample_cuda["imgs"], sample_cuda["proj_matrices"],
                                             sample_cuda["depth_values"], prior=())
 
             loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms)
             loss.backward()
-            self.optimizer.step()
+            for otm in self.optimizer:
+                otm.step()
+            # self.optimizer.step()
 
             # scalar_outputs = {"loss": loss,
             #                   "depth_loss": depth_loss,
@@ -88,7 +90,7 @@ class Trainer(BaseTrainer):
                 print(
                     "Epoch {}/{}, Iter {}/{}, lr {:.6f}, train loss = {:.3f}, depth loss = {:.3f}, time = {:.3f}".format(
                         epoch, self.epochs, batch_idx, len(self.data_loader),
-                        self.optimizer.param_groups[0]["lr"], loss, depth_loss, time.time() - start_time))
+                        self.optimizer[0].param_groups[0]["lr"], loss, depth_loss, time.time() - start_time))
             # del scalar_outputs, image_outputs
             self.train_metrics.update({"loss": loss.item(), "depth_loss": depth_loss.item()}, n=depth_gt.size(0))
 
@@ -96,7 +98,9 @@ class Trainer(BaseTrainer):
             self._valid_epoch(epoch)
 
         if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
+            for lrs in self.lr_scheduler:
+                lrs.step()
+            # self.lr_scheduler.step()
 
         return self.train_metrics.mean()
 
