@@ -1,185 +1,58 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .module import get_depth_range_samples, depth_regression, FeatureNet, CostRegNet, conf_regression
-from .utils.warping import homo_warping_3D, world_from_xy_depth
-import numpy as np
-from models import hyperlayers
-from utils import tensor2numpy, save_images
+from .module import *
+from models.losses import StereoFocalLoss
+from .utils.warping import homo_warping_3D, resample_vol, homo_warping_2D
+from .utils.disp2prob import LaplaceDisp2Prob, OneHotDisp2Prob
 
-np.random.seed(9121995)
+
 Align_Corners_Range = False
 
 
-class ImgEncoder(nn.Module):
-    r''' Simple convolutional encoder network.
-
-    It consists of 5 convolutional layers, each downsampling the input by a
-    factor of 2, and a final fully-connected layer projecting the output to
-    c_dim dimensions.
-
-    Args:
-        c_dim (int): output dimension of latent embedding
-    '''
-
-    def __init__(self, c_dim=128):
-        super().__init__()
-        self.conv0 = nn.Sequential(nn.ReflectionPad2d(1), nn.Conv2d(3, 32, 3, stride=2))
-        self.conv1 = nn.Sequential(nn.ReflectionPad2d(1), nn.Conv2d(32, 64, 3, stride=2))
-        self.conv2 = nn.Sequential(nn.ReflectionPad2d(1), nn.Conv2d(64, 96, 3, stride=2))
-        self.conv3 = nn.Sequential(nn.ReflectionPad2d(1), nn.Conv2d(96, 128, 3, stride=2))
-        self.conv4 = nn.Sequential(nn.ReflectionPad2d(1), nn.Conv2d(128, 128, 3, stride=2))
-        self.fc_out = nn.Linear(128, c_dim)
-        self.actvn = nn.ReLU()
-
-    def forward(self, x):
-        batch_size = x.size(0)
-
-        net = self.conv0(x)
-        net = self.conv1(self.actvn(net))
-        net = self.conv2(self.actvn(net))
-        net = self.conv3(self.actvn(net))
-        net = self.conv4(self.actvn(net))
-        net = net.view(batch_size, 128, -1).mean(2)
-        out = self.fc_out(self.actvn(net))
-
-        return out
-
-
-class LatentScene(nn.Module):
-    def __init__(self, in_channels, out_channels, num_instances, latent_dim,
-                 num_hidden_units_phi, phi_layers, is_training=True):
-        super(LatentScene, self).__init__()
-
-        # Auto-decoder: each scene instance gets its own code vector z
-        self.latent_codes = nn.Embedding(num_instances, latent_dim)
-        nn.init.normal_(self.latent_codes.weight, mean=0, std=0.1)
-
-        self.hyper_phi = hyperlayers.HyperFC(hyper_in_ch=latent_dim,
-                                             hyper_num_hidden_layers=1,
-                                             hyper_hidden_ch=latent_dim,
-                                             hidden_ch=num_hidden_units_phi,
-                                             num_hidden_layers=phi_layers - 2,
-                                             in_ch=num_hidden_units_phi, out_ch=out_channels, outer_activation='linear')
-        # self.img_encoder = ImgEncoder(c_dim=num_hidden_units_phi)
-        # self.points_encoder = FCBlock(num_hidden_units_phi, 2, in_channels, num_hidden_units_phi)
-        self.points_encoder = hyperlayers.HyperFC(hyper_in_ch=latent_dim,
-                                             hyper_num_hidden_layers=1,
-                                             hyper_hidden_ch=latent_dim,
-                                             hidden_ch=num_hidden_units_phi,
-                                             num_hidden_layers=2,
-                                             in_ch=in_channels, out_ch=num_hidden_units_phi, outer_activation='relu')
-        if not is_training:
-            for param in self.hyper_phi.parameters():
-                param.requires_grad = False
-            # for param in self.img_encoder.parameters():
-            #     param.requires_grad = False
-            for param in self.points_encoder.parameters():
-                param.requires_grad = False
-
-        # self.z = None
-
-    def get_latent_loss(self):
-        """Computes loss on latent code vectors (L_{latent} in eq. 6 in paper)
-        :return: Latent loss.
-        """
-        latent_reg_loss = torch.mean(self.z ** 2)
-
-        return latent_reg_loss
-
-    def get_occ_loss(self, inputs, mask=None, ndsamples=1, depth_min=0.0,
-                     depth_max=1500.0, trans_vec=None, sampling_range=(20, 100, 5)):
-        depth = inputs["depth"].unsqueeze(1)
-        depth_samples = depth
-        nr = (ndsamples - 1) // 2
-        nl = ndsamples - 1 - nr
-        min_r, max_r, inter_r = sampling_range
-        if ndsamples > 1:
-            # for i in range(nl):
-            d_intervals = torch.tensor(np.random.choice(np.arange(min_r, max_r, inter_r), size=nl), device=depth.device).float()
-            depth_samples = torch.cat((depth_samples, depth - d_intervals.view((1, nl, 1, 1))), dim=1)
-            # for i in range(nr):
-            d_intervals = torch.tensor(np.random.choice(np.arange(min_r, max_r, inter_r), size=nr), device=depth.device).float()
-            depth_samples = torch.cat((depth_samples, depth + d_intervals.view((1, nr, 1, 1))), dim=1)
-        inputs["depth"] = depth_samples.clamp(min=depth_min, max=depth_max)  # depth_samples
-        inputs["depth"] = inputs["depth"][:, 1:, :, :]
-
-        if mask is not None:
-            inputs["depth"] = inputs["depth"] * mask.unsqueeze(1).float()
-        target = torch.ones_like(inputs["depth"], requires_grad=False)
-        target[:, :nl, :, :] = 0.0
-
-        output, embeddings = self.forward(inputs, ndsamples=ndsamples - 1, trans_vec=trans_vec)
-        output = output.squeeze(-1).view(inputs["depth"].size())
-
-        return output, target, embeddings
-
-    def predict_from_points(self, points_xyz, scene_ids, imgs):
-        z = self.latent_codes(scene_ids)
-        phi = self.hyper_phi(z)
-
-        points_extractor = self.points_encoder(z)
-        points_xyz = points_extractor(points_xyz)
-
-        # img_feat = self.img_encoder(imgs)
-        # img_feat = img_feat.unsqueeze(1)
-        #
-        # points_xyz = points_xyz + img_feat
-
-        occ = phi(points_xyz)
-        return occ
-
-    def forward(self, inputs, ndsamples=1, trans_vec=None):
-
-        # Parse model input.
-        instance_idcs = inputs["scene_idx"].long()
-        pose = inputs["pose"]
-        intrinsics = inputs["intrinsics"]
-        uv = inputs["uv"].float()
-        img_feat = inputs["img_feature"]
-        depth = inputs["depth"]
-
-        z = self.latent_codes(instance_idcs)
-
-        phi = self.hyper_phi(z)  # Forward pass through hypernetwork yields a (callable) SRN.
-
-        # Raymarch SRN phi along rays defined by camera pose, intrinsics and uv coordinates.
-
-        # Sapmle phi a last time at the final ray-marched world coordinates.
-        points_xyz = world_from_xy_depth(uv, depth, pose, intrinsics)
-        if trans_vec is None:
-            trans_vec = torch.zeros_like(points_xyz)
-        else:
-            trans_vec = trans_vec.unsqueeze(1)
-        points_xyz = points_xyz - trans_vec
-        points_extractor = self.points_encoder(z)
-        points_xyz = points_extractor(points_xyz)
-        # points_xyz = self.points_encoder(points_xyz)
-
-        # img_feat = self.img_encoder(img_feat)
-        # img_feat = img_feat.unsqueeze(1)
-        #
-        # points_xyz = points_xyz + img_feat
-
-        occ = phi(points_xyz)
-        return occ, z
-
-
 class DepthNet(nn.Module):
-    def __init__(self):
+    def __init__(self, ndepths):
         super(DepthNet, self).__init__()
+        """vol_filtering_stage1 = nn.Sequential(nn.Conv2d(2*ndepths[0], ndepths[0], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[0]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[0], ndepths[0], kernel_size=3, bias=False, padding=1),
+                                    nn.BatchNorm2d(ndepths[0]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[0], ndepths[0], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[0]),
+                                    nn.Sigmoid())
+        vol_filtering_stage2 = nn.Sequential(nn.Conv2d(2*ndepths[1], ndepths[1], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[1]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[1], ndepths[1], kernel_size=3, bias=False, padding=1),
+                                    nn.BatchNorm2d(ndepths[1]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[1], ndepths[1], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[1]),
+                                    nn.Sigmoid())
+        vol_filtering_stage3 = nn.Sequential(nn.Conv2d(2*ndepths[2], ndepths[2], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[2]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[2], ndepths[2], kernel_size=3, bias=False, padding=1),
+                                    nn.BatchNorm2d(ndepths[2]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[2], ndepths[2], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[2]),
+                                    nn.Sigmoid())
+        self.vol_filtering = nn.ModuleList([vol_filtering_stage1, vol_filtering_stage2, vol_filtering_stage3])"""
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
-                conv3d=True, log=False):
-        # proj_matrices = torch.unbind(proj_matrices, 1)
-        assert len(features) == len(proj_matrices[1])+1, "Different number of images and projection matrices"
+                prev_state=None, stage_idx=None):
+        proj_matrices = torch.unbind(proj_matrices, 1)
+        assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
         num_views = len(features)
 
         # step 1. feature extraction
         # in: images; out: 32-channel feature maps
         ref_feature, src_features = features[0], features[1:]
-        ref_proj, src_projs = proj_matrices #proj_matrices[0], proj_matrices[1:]
+        ref_proj, src_projs = proj_matrices[0], proj_matrices[1:]
 
         # step 2. differentiable homograph, build cost volume
         ref_volume = ref_feature.unsqueeze(2).repeat(1, 1, num_depth, 1, 1)
@@ -206,31 +79,70 @@ class DepthNet(nn.Module):
         # aggregate multiple feature volumes by variance
         volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
 
-        # if not conv3d:
-        #     volume_variance = volume_variance.squeeze(2)
         # step 3. cost volume regularization
         cost_reg = cost_regularization(volume_variance)
-        # if stage_idx > 0:
-        prob_volume_pre = cost_reg.squeeze(1)
+        # cost_reg = F.upsample(cost_reg, [num_depth * 4, img_height, img_width], mode='trilinear')
+        if stage_idx > 0:
+            prob_volume_pre = cost_reg.squeeze(1)
 
-        if prob_volume_init is not None:
-           prob_volume_pre += prob_volume_init
+        #if prob_volume_init is not None:
+        #    prob_volume_pre += prob_volume_init
 
-        # if conv3d:
-        if log:
-            prob_volume = F.log_softmax(prob_volume_pre, dim=1)
-        else:
+        # log_prob_volume = F.log_softmax(prob_volume_pre, dim=1)
             prob_volume = F.softmax(prob_volume_pre, dim=1)
-        # else:
-        #     prob_volume = prob_volume_pre #torch.log(prob_volume_pre + 1e-6)
-        # prob_volume = F.softmax(prob_volume_pre, dim=1)
 
-        return prob_volume
+        # edit by Khang
+        # ref_proj_cur = ref_proj[:, 0].clone()
+        # ref_proj_cur[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
+        # ref_proj_prev, prev_costvol, prev_depth_values, is_begin = prev_state
+        # prev_depth, prev_cfd = prev_costvol
+        # warped_depth, warped_cfd = homo_warping_2D(prev_depth.unsqueeze(1), prev_cfd.unsqueeze(1), ref_proj_prev, ref_proj_cur)
+        # std = (1 - warped_cfd) + 1.2
+        # mask = (warped_depth > 0.5).float()
+        # warped_costvol = LaplaceDisp2Prob(depth_values, warped_depth, variance=std).getProb()
+        # cur_vol = prob_volume.detach().clone()
+        # if is_begin.sum() > 0:
+        #     # print('is begining of video')
+        #     B, D, H, W = prob_volume.size() #log_prob_volume.size()
+        #     # prev_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda() #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D).cuda()
+        #     # if prev_costvol is None:
+        #     #     prev_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda()
+        #     # warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
+        #     #                                 prev_depth_values=prev_depth_values, begin_video=is_begin)
+        #     warped_costvol[is_begin] = 0 #1.0 / D
+        #     if is_begin.sum() < B:
+        #         input_vol = torch.cat((cur_vol[~is_begin], warped_costvol[~is_begin]), dim=1)
+        #         weight_vol = self.vol_filtering[stage_idx](input_vol)
+        #         warped_costvol[~is_begin] = warped_costvol[~is_begin] * weight_vol
+        # else:
+        #     weight_vol = self.vol_filtering[stage_idx](torch.cat((cur_vol, warped_costvol), dim=1))
+        #     warped_costvol = warped_costvol * weight_vol
+        #
+        # itg_prob_volume = prob_volume + warped_costvol * mask
+        # itg_prob_volume = F.normalize(itg_prob_volume, p=1, dim=1)
+
+            itg_prob_volume = prob_volume
+
+            depth = depth_regression(itg_prob_volume, depth_values=depth_values)
+
+            with torch.no_grad():
+            # photometric confidence
+                prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(itg_prob_volume.unsqueeze(1), pad=(0, 0, 0, 0, 0, 1)), (2, 1, 1), stride=1, padding=0).squeeze(1)
+                depth_index = depth_regression(itg_prob_volume, depth_values=torch.arange(num_depth, device=itg_prob_volume.device, dtype=torch.float)).long()
+                depth_index = depth_index.clamp(min=0, max=num_depth-1)
+                photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
+
+        else:
+            itg_prob_volume = cost_reg
+            depth, photometric_confidence = None, None
+        return {"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": itg_prob_volume}
+
+        # return {"depth": depth,  "photometric_confidence": photometric_confidence}
 
 
 class SeqProbMVSNet(nn.Module):
     def __init__(self, refine=False, ndepths=(48, 32, 8), depth_interals_ratio=(4, 2, 1), share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), is_training=True):
+                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8)):
         super(SeqProbMVSNet, self).__init__()
         self.refine = refine
         self.share_cr = share_cr
@@ -240,14 +152,13 @@ class SeqProbMVSNet(nn.Module):
         self.arch_mode = arch_mode
         self.cr_base_chs = cr_base_chs
         self.num_stage = len(ndepths)
-        self.is_training = is_training
         print("**********netphs:{}, depth_intervals_ratio:{},  grad:{}, chs:{}************".format(ndepths,
               depth_interals_ratio, self.grad_method, self.cr_base_chs))
 
         assert len(ndepths) == len(depth_interals_ratio)
 
         self.stage_infos = {
-            "stage1": {
+            "stage1":{
                 "scale": 4.0,
             },
             "stage2": {
@@ -259,82 +170,29 @@ class SeqProbMVSNet(nn.Module):
         }
 
         self.feature = FeatureNet(base_channels=8, stride=4, num_stage=self.num_stage, arch_mode=self.arch_mode)
+        if self.share_cr:
+            self.cost_regularization = CostRegNet(in_channels=self.feature.out_channels, base_channels=8)
+        else:
+            last_layer = [False, True, True]
+            self.cost_regularization = nn.ModuleList([CostRegNet(in_channels=self.feature.out_channels[i],
+                                                                 base_channels=self.cr_base_chs[i], last_layer=last_layer[i])
+                                                      for i in range(self.num_stage)])
+        if self.refine:
+            self.refine_network = RefineNet()
 
-        self.cost_reg = nn.ModuleList([CostRegNet(in_channels=self.feature.out_channels[i], base_channels=self.cr_base_chs[i])
-                                       for i in range(self.num_stage)])
-        self.DepthNet = DepthNet()
-        self.latent_scene = LatentScene(3, 1, 128, 128, 256, 3, is_training=False)
+        self.DepthNet = DepthNet(self.ndepths)
+        in_channels = (2, self.feature.out_channels[0])
+        self.cvae = GenerationNet(input_channels=in_channels, output_channels=self.ndepths[0],
+                                  num_filters=[16, 32, 64, 96, 128], latent_dim=8)
+        self.f_comb = nn.Sequential(Conv3d(self.cr_base_chs[0]+1, self.cr_base_chs[0], kernel_size=1),
+                                    Conv3d(self.cr_base_chs[0], self.cr_base_chs[0], kernel_size=3, padding=1),
+                                    Conv3d(self.cr_base_chs[0], self.cr_base_chs[0], kernel_size=3, padding=1))
+        #self.f_comb = Conv3d(self.cr_base_chs[0]*2, self.cr_base_chs[0], kernel_size=1)
+        self.regress_prob = nn.Conv3d(self.cr_base_chs[0], 1, 1, bias=False)
 
-        self.cost_reg_params = list(self.feature.parameters()) + list(self.cost_reg.parameters())
+    def forward(self, imgs, proj_matrices, depth_values, prev_state=None, gt_depth=None, gt_mask=None):
 
-        if not self.is_training:
-            for param in self.cost_reg_params:
-                param.requires_grad = False
-        # else:
-        #     ckpt = torch.load('final_model_000049.ckpt')
-        #     self.latent_scene.load_state_dict(ckpt['model'])
-        #     for p in self.latent_scene.parameters():
-        #         p.requires_grad = False
-
-    def get_posterior(self, features, proj_matrices, depth_values, first_view=None, img_feat=None,
-                      scene_ids=None, uv=None, scale=1.0, trans_vec=None, cost_reg=None):
-        # depth_values = depth.unsqueeze(1)
-        likelihood_vol = self.DepthNet(features, proj_matrices, depth_values, depth_values.size(1),
-                                       cost_regularization=cost_reg, conv3d=False, log=True)
-        refs, srcs = proj_matrices
-        intrinsics, extrinsics = refs[:, 1, :3, :3].clone(), refs[:, 0, :4, :4]
-        intrinsics[:, :2, :] /= scale
-
-        prior_vol = torch.zeros_like(likelihood_vol)
-        embeddings = []
-
-        batch_size, ndepths, height, width = depth_values.size()
-        if first_view.sum() < batch_size:
-            with torch.no_grad():
-                pose = torch.inverse(extrinsics)
-                sub_bsize = batch_size - first_view.sum().item()
-                depth_scaled = F.interpolate(depth_values, [height//int(scale), width//int(scale)], mode='nearest')
-                pred_vol, embedding = self.latent_scene({"scene_idx": scene_ids[~first_view], "pose": pose[~first_view],
-                                                  "depth": depth_scaled[~first_view], "intrinsics": intrinsics[~first_view],
-                                                  "uv": uv.repeat(sub_bsize, ndepths, 1),
-                                                  "img_feature": img_feat[~first_view]}, ndsamples=ndepths, trans_vec=trans_vec[~first_view])
-                pred_vol = pred_vol.squeeze(-1).view(sub_bsize, ndepths, depth_scaled.size(2), depth_scaled.size(3))
-                pred_vol = F.interpolate(pred_vol, [height, width], mode='nearest')
-                prior_vol[~first_view] = -pred_vol**2 / 2
-                embeddings.append(embedding)
-
-        embeddings = torch.cat(embeddings, dim=0) if len(embeddings) > 0 else None
-        prior_vol = prior_vol.clamp(min=-12, max=0)
-        prior_conf, indices = torch.max(prior_vol, dim=1, keepdim=True)
-        prior_depth = torch.gather(depth_values, 1, indices)
-        # prior_vol = F.log_softmax(prior_vol, dim=1)
-        # print(prior_vol.mean().item(), prior_vol.min().item(), prior_vol.max().item())
-        itg_cost_vol = likelihood_vol + prior_vol
-        # print(itg_cost_vol.min().item(), itg_cost_vol.min().item())
-        return itg_cost_vol, embeddings, prior_depth.squeeze(1)
-
-    def get_depth_candidates(self, cur_depth, stage_idx, depth_interval, shape, depth_min, depth_max):
-        if cur_depth.dim() == 4:
-            cur_depth = cur_depth.squeeze(1)
-        batch_size = cur_depth.size(0)
-        height, width = shape
-        stage_scale = self.stage_infos["stage{}".format(stage_idx + 1)]["scale"]
-        depth_range_samples = get_depth_range_samples(cur_depth=cur_depth,
-                                                      ndepth=self.ndepths[stage_idx],
-                                                      depth_inteval_pixel=self.depth_interals_ratio[
-                                                                              stage_idx] * depth_interval,
-                                                      dtype=cur_depth.dtype, device=cur_depth.device,
-                                                      shape=[batch_size, height, width],
-                                                      max_depth=depth_max, min_depth=depth_min)
-        # added by Khang
-        depth_values_stage = F.interpolate(depth_range_samples.unsqueeze(1),
-                                           [self.ndepths[stage_idx], height // int(stage_scale),
-                                            width // int(stage_scale)], mode='trilinear',
-                                           align_corners=Align_Corners_Range).squeeze(1)
-        return depth_values_stage
-
-    def forward(self, imgs, proj_matrices, depth_values, first_view=None, scene_ids=None,
-                depth=None, iter=0.0, trans_vec=None):
+        prev_ref_matrices, prev_costvol, prev_depth_values, is_begin = prev_state
 
         depth_min = float(depth_values[0, 0].cpu().numpy())
         depth_max = float(depth_values[0, -1].cpu().numpy())
@@ -346,104 +204,118 @@ class SeqProbMVSNet(nn.Module):
             img = imgs[:, nview_idx]
             features.append(self.feature(img))
 
-        outputs = {"posterior": {}, "gt_posterior": {}, "scene_embedding": None}
-        cur_depth = None
-        height, width = imgs.shape[3], imgs.shape[4]
-        img_feat = F.interpolate(imgs[:, 0], [height // 4, width // 4], mode='bilinear', align_corners=Align_Corners_Range)
-        y, x = torch.meshgrid([torch.arange(0, height // 4, dtype=torch.float32, device=imgs.device),
-                               torch.arange(0, width // 4, dtype=torch.float32, device=imgs.device)])
-        y, x = y.contiguous().view(-1), x.contiguous().view(-1)
-        uv = torch.stack([x, y], dim=-1)
-        uv = uv.unsqueeze(0)
-
-        if depth is None:
-            stages = [0, 1]
-        elif iter < 2:
-            stages = [1]
-        else:
-            stages = [2]
-        decay = iter if iter < 2 else iter - 2
-        if decay > 2:
-            decay = 2
-        for stage_idx in stages:
+        outputs = {}
+        depth, cur_depth = None, None
+        depth_range_values = {}
+        for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
             features_stage = [feat["stage{}".format(stage_idx + 1)] for feat in features]
             proj_matrices_stage = proj_matrices["stage{}".format(stage_idx + 1)]
             stage_scale = self.stage_infos["stage{}".format(stage_idx + 1)]["scale"]
             # edit by Khang
-            proj_matrices_stage = torch.unbind(proj_matrices_stage, 1)
-            refs, srcs = proj_matrices_stage[0], proj_matrices_stage[1:]
-            intrinsics, extrinsics = refs[:, 1, :3, :3].clone(), refs[:, 0, :4, :4]
+            prev_costvol_stage = prev_costvol["stage{}".format(stage_idx + 1)]
+            prev_ref_matrix = prev_ref_matrices["stage{}".format(stage_idx + 1)]
+            prev_depth_values_stage = prev_depth_values["stage{}".format(stage_idx + 1)]
+            gt_depth_stage = gt_depth["stage{}".format(stage_idx + 1)].unsqueeze(1) if gt_depth is not None else None
+            gt_mask_stage = gt_mask["stage{}".format(stage_idx + 1)].unsqueeze(1) if gt_mask is not None else None
 
-            # t1 = time()
             if depth is not None:
                 if self.grad_method == "detach":
                     cur_depth = depth.detach()
                 else:
                     cur_depth = depth
-                cur_depth = F.interpolate(cur_depth.unsqueeze(1), [height, width],
-                                          mode='bilinear', align_corners=Align_Corners_Range).squeeze(1)
+                cur_depth = F.interpolate(cur_depth.unsqueeze(1),
+                                                [img.shape[2], img.shape[3]], mode='bilinear',
+                                                align_corners=Align_Corners_Range).squeeze(1)
             else:
                 cur_depth = depth_values
+            depth_range_samples = get_depth_range_samples(cur_depth=cur_depth,
+                                                        ndepth=self.ndepths[stage_idx],
+                                                        depth_inteval_pixel=self.depth_interals_ratio[stage_idx] * depth_interval,
+                                                        dtype=img[0].dtype,
+                                                        device=img[0].device,
+                                                        shape=[img.shape[0], img.shape[2], img.shape[3]],
+                                                        max_depth=depth_max,
+                                                        min_depth=depth_min)
 
-            new_depth_interval = depth_interval * np.power(2.0, -decay)
-            depth_values_stage = self.get_depth_candidates(cur_depth, stage_idx, new_depth_interval, (height, width),
-                                                           depth_min=depth_min, depth_max=depth_max)
+            # added by Khang
+            depth_values_stage = F.interpolate(depth_range_samples.unsqueeze(1),
+                                                [self.ndepths[stage_idx], img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)],
+                                                mode='trilinear', align_corners=Align_Corners_Range).squeeze(1)
 
-            if stage_idx == 0:
-                # t3 = time()
-                likelihood_vol = self.DepthNet(features_stage, (refs, srcs),
-                                               depth_values=depth_values_stage, num_depth=self.ndepths[stage_idx],
-                                               cost_regularization=self.cost_reg[stage_idx], log=False)
-                itg_cost_vol = likelihood_vol
+            outputs_stage = self.DepthNet(features_stage, proj_matrices_stage,
+                                          depth_values=depth_values_stage,
+                                          num_depth=self.ndepths[stage_idx],
+                                          cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
+                                          prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage, is_begin),
+                                          stage_idx=stage_idx)
 
-                depth = depth_regression(itg_cost_vol, depth_values=depth_values_stage)
-                conf = conf_regression(itg_cost_vol)
+            if stage_idx == 0: #(self.num_stage-1):
+                proj_matrices_stage = torch.unbind(proj_matrices_stage, 1)
+                ref_proj = proj_matrices_stage[0]
+                cur_ref_proj = ref_proj[:, 0].clone()
+                cur_ref_proj[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
+                prev_depth, prev_cfd = prev_costvol_stage
+                warped_depth, warped_cfd = homo_warping_2D(prev_depth.unsqueeze(1), prev_cfd.unsqueeze(1),
+                                                           prev_ref_matrix, cur_ref_proj)
+                if is_begin.sum() > 0:
+                    costvol = F.softmax(
+                        self.regress_prob(outputs_stage["prob_volume"].detach()[is_begin]).detach().squeeze(1), dim=1)
+                    warped_depth[is_begin] = depth_regression(costvol, depth_values=depth_values_stage).unsqueeze(1)
+                    prob_sum2 = 2 * F.avg_pool3d(F.pad(costvol.unsqueeze(1), pad=(0, 0, 0, 0, 0, 1)), (2, 1, 1),
+                                                 stride=1, padding=0).squeeze(1)
+                    depth_index = depth_regression(costvol, depth_values=torch.arange(self.ndepths[stage_idx],
+                                                                                      device=costvol.device,
+                                                                                      dtype=torch.float)).long()
+                    depth_index = depth_index.clamp(min=0, max=self.ndepths[stage_idx] - 1)
+                    warped_cfd[is_begin] = torch.gather(prob_sum2, 1, depth_index.unsqueeze(1))
+                # gt_costvol = OneHotDisp2Prob(depth_values_stage, gt_depth_stage, variance=self.depth_interals_ratio[stage_idx]*depth_interval).getProb()
+                # gt_costvol = gt_costvol + (1 - gt_mask) / self.ndepths[stage_idx]
+                # sum_warped = warped_costvol.sum(dim=1)
+                # sum_gt = gt_costvol.sum(dim=1)
+                # print(sum_warped.min(), sum_warped.max())
+                # print(sum_gt.min(), sum_gt.max())
+                # h, w = imgs[:, 0].size(2), imgs[:, 0].size(3)
+                # feature_img = F.interpolate(imgs[:, 0], [h//int(stage_scale), w//int(stage_scale)], mode='bilinear', align_corners=Align_Corners_Range)
+                feature_img = features_stage[0].detach()
 
-                outputs_stage = {"depth": depth, "photometric_confidence": conf, "prior_prob": None}
-                outputs["stage{}".format(stage_idx + 1)] = outputs_stage
-                outputs.update(outputs_stage)
-            else:
+                if self.training:
+                    gt_depth_stage = gt_depth_stage * gt_mask_stage
+                    self.cvae(feature_img, warped_depth, warped_cfd, gt_depth_stage, gt_mask_stage)
+                    recons_vol, kl_term = self.cvae.elbo(depth_values=depth_values_stage, variance=1)
+                    # recons_vol = recons_vol.repeat(1, self.cr_base_chs[stage_idx], 1, 1, 1)
+                    outputs_stage['kl'] = kl_term
+                else:
+                    self.cvae(feature_img, warped_depth, warped_cfd, training=False)
+                    recons_vol = self.cvae.sample(testing=True, num_samples=self.cr_base_chs[stage_idx], depth_values=depth_values_stage, variance=1)
+                itg_cost_vol = self.f_comb(torch.cat((outputs_stage["prob_volume"], recons_vol), dim=1)) #.squeeze(1) #outputs_stage["prob_volume"] + recons_vol
+                itg_cost_vol = F.softmax(self.regress_prob(itg_cost_vol).squeeze(1), dim=1) #F.normalize(itg_cost_vol, p=1, dim=1)
+                outputs_stage['depth'] = depth_regression(itg_cost_vol, depth_values=depth_values_stage)
+                with torch.no_grad():
+                    # photometric confidence
+                    prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(itg_cost_vol.unsqueeze(1), pad=(0, 0, 0, 0, 0, 1)),
+                                                        (2, 1, 1), stride=1, padding=0).squeeze(1)
+                    depth_index = depth_regression(itg_cost_vol.detach(),
+                                                   depth_values=torch.arange(self.ndepths[stage_idx], device=itg_cost_vol.device,
+                                                                             dtype=torch.float)).long()
+                    depth_index = depth_index.clamp(min=0, max=self.ndepths[stage_idx]-1)
+                    photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
+                outputs_stage['photometric_confidence'] = photometric_confidence
+                outputs_stage['prob_volume'] = itg_cost_vol
+                # outputs_stage['kl'] = kl_term
 
-                log_posterior, embeddings, prior_depth = self.get_posterior(features_stage, (refs, srcs), depth_values_stage,
-                                                               first_view=first_view, img_feat=img_feat,
-                                                               scene_ids=scene_ids, uv=uv, scale=4/stage_scale,
-                                                               trans_vec=trans_vec, cost_reg=self.cost_reg[stage_idx])
-                posterior = F.softmax(log_posterior, dim=1)
+            depth = outputs_stage['depth']
+            outputs["stage{}".format(stage_idx + 1)] = outputs_stage
+            outputs.update(outputs_stage)
+            depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
+            # total_loss += outputs_stage["loss_vol"]
 
-                # if self.is_training:
-                #     conf, indices = torch.max(posterior, dim=1, keepdim=True)
-                #     depth = depth_regression(posterior, depth_values=depth_values_stage)
-                #     outputs_stage = {"depth": depth, "photometric_confidence": conf.squeeze(1), "prior_prob": None}
-                # else:
+        # depth map refinement
+        if self.refine:
+            refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
+            outputs["refined_depth"] = refined_depth
+        outputs["depth_candidates"] = depth_range_values
+        # outputs["total_loss_vol"] = total_loss
 
-                depth = depth_regression(posterior, depth_values=depth_values_stage)
-                conf = conf_regression(posterior)
-
-                depth_scaled = F.interpolate(depth.unsqueeze(1), [height // 4, width // 4], mode='nearest')
-                conf_scaled = F.interpolate(conf.unsqueeze(1), [height // 4, width // 4], mode='nearest')
-
-                depth_samples = depth_scaled
-                d_intervals = torch.tensor(np.random.choice(np.arange(20, 100, 5), size=5),
-                                           device=depth_scaled.device).float()
-                depth_samples = torch.cat((depth_samples, depth_scaled - d_intervals.view((1, 5, 1, 1))), dim=1)
-                depth_samples = depth_samples.clamp(min=depth_min, max=depth_max)  # depth_samples
-
-                intrinsics[:, :2, :] = intrinsics[:, :2, :] * stage_scale / 4
-                pose = torch.inverse(extrinsics)
-                pred_vol, embeddings = self.latent_scene(
-                    {"scene_idx": scene_ids, "pose": pose, "depth": depth_samples, "intrinsics": intrinsics,
-                     "uv": uv.repeat(depth_samples.size(0), depth_samples.size(1), 1), "img_feature": img_feat},
-                    ndsamples=depth_samples.size(1), trans_vec=trans_vec)
-                pred_vol = pred_vol.squeeze(-1).view(depth_samples.size())
-
-                outputs_stage = {"depth": depth, "photometric_confidence": conf,
-                                 "scaled_conf": conf_scaled, "prior_prob": pred_vol}
-
-                outputs["stage{}".format(stage_idx + 1)] = outputs_stage
-                outputs.update(outputs_stage)
-                outputs["scene_embedding"] = embeddings
-                outputs["prior_depth"] = prior_depth
-
-        return outputs, depth.detach()
+        return outputs

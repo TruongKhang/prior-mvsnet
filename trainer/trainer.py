@@ -1,0 +1,188 @@
+import numpy as np
+import os
+import torch
+import time
+
+from base import BaseTrainer
+from utils import AbsDepthError_metrics, Thres_metrics, tocuda, DictAverageMeter, inf_loop
+
+
+class Trainer(BaseTrainer):
+    """
+    Trainer class
+    """
+    def __init__(self, model, criterion, optimizer, config, data_loader,
+                 valid_data_loader=None, lr_scheduler=None, len_epoch=None, writer=None):
+        super().__init__(model, criterion, optimizer, config, writer=writer)
+        self.config = config
+        self.data_loader = data_loader
+        self.data_loader.set_device(self.device)
+        if len_epoch is None:
+            # epoch-based training
+            self.len_epoch = len(self.data_loader)
+        else:
+            # iteration-based training
+            self.data_loader = inf_loop(data_loader)
+            self.len_epoch = len_epoch
+        self.valid_data_loader = valid_data_loader
+        self.do_validation = self.valid_data_loader is not None
+        self.lr_scheduler = lr_scheduler
+        self.log_step = config['trainer']['logging_every'] # int(np.sqrt(data_loader.batch_size))
+        self.depth_scale = config["data_loader"]["depth_scale"]
+        self.train_metrics = DictAverageMeter()
+        self.valid_metrics = DictAverageMeter()
+
+    def _train_epoch(self, epoch):
+        """
+        Training logic for an epoch
+        :param epoch: Integer, current training epoch.
+        :return: A log that contains average loss and metric in this epoch.
+        """
+        self.model.train()
+        print('Epoch {}:'.format(epoch))
+
+        self.data_loader.dataset.generate_indices()
+        # training
+        for batch_idx, sample in enumerate(self.data_loader):
+            start_time = time.time()
+
+            # modified from the original by Khang
+            sample_cuda = tocuda(sample)
+            is_begin = sample_cuda['is_begin'].type(torch.uint8)
+
+            depth_gt_ms = sample_cuda["depth"]
+            mask_ms = sample_cuda["mask"]
+
+            num_stage = len(self.config["arch"]["args"]["ndepths"])
+            depth_gt = depth_gt_ms["stage{}".format(num_stage)] * self.depth_scale
+            mask = mask_ms["stage{}".format(num_stage)]
+
+            self.optimizer.zero_grad()
+            # prev_ref_matrices, itg_vol = prev_state
+
+            outputs, depth_est = self.model(sample_cuda["imgs"], sample_cuda["proj_matrices"],
+                                            sample_cuda["depth_values"], prior=())
+
+            loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms)
+            loss.backward()
+            self.optimizer.step()
+
+            # scalar_outputs = {"loss": loss,
+            #                   "depth_loss": depth_loss,
+            #                   "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+            #                   "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
+            #                   "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
+            #                   "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8)}
+
+            # image_outputs = {"depth_est": depth_est * mask,
+            #                  "depth_est_nomask": depth_est,
+            #                  "depth_gt": sample_cuda["depth"]["stage1"].cpu(),
+            #                  "ref_img": sample_cuda["imgs"][:, 0].cpu(),
+            #                  "mask": sample_cuda["mask"]["stage1"].cpu(),
+            #                  "errormap": (depth_est - depth_gt).abs() * mask,
+            #                  }
+
+            if batch_idx % self.log_step == 0:
+                # save_scalars(self.writer, 'train', scalar_outputs, global_step)
+                # save_images(self.writer, 'train', image_outputs, global_step)
+                print(
+                    "Epoch {}/{}, Iter {}/{}, lr {:.6f}, train loss = {:.3f}, depth loss = {:.3f}, time = {:.3f}".format(
+                        epoch, self.epochs, batch_idx, len(self.data_loader),
+                        self.optimizer.param_groups[0]["lr"], loss, depth_loss, time.time() - start_time))
+            # del scalar_outputs, image_outputs
+            self.train_metrics.update({"loss": loss.item(), "depth_loss": depth_loss.item()}, n=depth_gt.size(0))
+
+        if (epoch % self.config["trainer"]["eval_freq"] == 0) or (epoch == self.epochs - 1):
+            self._valid_epoch(epoch)
+
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
+
+        return self.train_metrics.mean()
+
+    def _valid_epoch(self, epoch, save_folder=None):
+        """
+        Validate after training an epoch
+        :param epoch: Integer, current training epoch.
+        :return: A log that contains information about validation
+        """
+        print("Validation at epoch %d, size of validation set: %d, batch_size: %d" % (epoch, len(self.valid_data_loader),
+                                                                                     self.valid_data_loader.batch_size))
+        if save_folder is not None:
+            path_depth = os.path.join(save_folder, 'depth_maps')
+            if not os.path.exists(path_depth):
+                os.makedirs(path_depth)
+            path_cfd = os.path.join(save_folder, 'confidence')
+            if not os.path.exists(path_cfd):
+                os.makedirs(path_cfd)
+
+        self.model.eval()
+
+        for batch_idx, sample in enumerate(self.valid_data_loader):
+            start_time = time.time()
+
+            # modified from the original by Khang
+            sample_cuda = tocuda(sample)
+            is_begin = sample['is_begin'].type(torch.uint8)
+
+            depth_gt_ms = sample_cuda["depth"]
+            mask_ms = sample_cuda["mask"]
+
+            num_stage = len(self.config["arch"]["args"]["ndepths"])
+            depth_gt = depth_gt_ms["stage{}".format(num_stage)] * self.depth_scale
+            mask = mask_ms["stage{}".format(num_stage)]
+
+            outputs, depth_est = self.model(sample_cuda["imgs"], sample_cuda["proj_matrices"],
+                                            sample_cuda["depth_values"], prior=())
+
+            loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms)
+
+            scalar_outputs = {"loss": loss,
+                              "depth_loss": depth_loss,
+                              "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+                              "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
+                              "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
+                              "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),
+                              "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 14),
+                              "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 20),
+
+                              "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, 2.0]),
+                              "thres4mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [2.0, 4.0]),
+                              "thres8mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [4.0, 8.0]),
+                              "thres14mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [8.0, 14.0]),
+                              "thres20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
+                                                                          [14.0, 20.0]),
+                              "thres>20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
+                                                                           [20.0, 1e5]),
+                              }
+
+            # image_outputs = {"depth_est": depth_est * mask,
+            #                  "depth_est_nomask": depth_est,
+            #                  "depth_gt": sample_cuda["depth"]["stage1"].cpu(),
+            #                  "ref_img": sample_cuda["imgs"][:, 0].cpu(),
+            #                  "mask": sample_cuda["mask"]["stage1"].cpu(),
+            #                  "errormap": (depth_est - depth_gt).abs() * mask}
+
+            if batch_idx % self.log_step == 0:
+                # save_scalars(logger, 'test', scalar_outputs, global_step)
+                # save_images(logger, 'test', image_outputs, global_step)
+                print("Epoch {}/{}, Iter {}/{}, test loss = {:.3f}, depth loss = {:.3f}, time = {:3f}".format(
+                    epoch, self.epochs, batch_idx, len(self.valid_data_loader), loss, scalar_outputs["depth_loss"],
+                    time.time() - start_time))
+            self.valid_metrics.update(scalar_outputs)
+            del scalar_outputs  # , image_outputs
+
+        # save_scalars(logger, 'fulltest', avg_test_scalars.mean(), global_step)
+        # print("avg_test_scalars:", self.valid_metrics.mean())
+
+        return self.valid_metrics.mean()
+
+    def _progress(self, batch_idx):
+        base = '[{}/{} ({:.0f}%)]'
+        if hasattr(self.data_loader, 'n_samples'):
+            current = batch_idx * self.data_loader.batch_size
+            total = self.data_loader.n_samples
+        else:
+            current = batch_idx
+            total = self.len_epoch
+        return base.format(current, total, 100.0 * current / total)

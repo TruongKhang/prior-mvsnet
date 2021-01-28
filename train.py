@@ -6,68 +6,64 @@ import torch.backends.cudnn as cudnn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
-from datasets import find_dataset_def
-from models import *
-from utils import *
-from models.losses import cas_mvsnet_loss, seq_prob_loss
-import torch.distributed as dist
-import math
+
+import datasets.data_loaders as module_data
+import models.model as module_arch
+import models.losses as module_loss
+from trainer import Trainer
+
 
 SEED = 123
 torch.manual_seed(SEED)
-cudnn.benchmark = True
+cudnn.benchmark = False
 cudnn.deterministic = True
 
-parser = argparse.ArgumentParser(description='A PyTorch Implementation of Cascade Cost Volume MVSNet')
-parser.add_argument('--mode', default='train', help='train or test', choices=['train', 'test', 'profile'])
-parser.add_argument('--model', default='mvsnet', help='select model')
-parser.add_argument('--device', default='cuda', help='select model')
 
-parser.add_argument('--dataset', default='dtu_yao', help='select dataset')
-parser.add_argument('--trainpath', help='train datapath')
-parser.add_argument('--testpath', help='test datapath')
-parser.add_argument('--trainlist', help='train list')
-parser.add_argument('--testlist', help='test list')
+def main(config):
+    logger = config.get_logger('train')
 
-parser.add_argument('--epochs', type=int, default=16, help='number of epochs to train')
-parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
-parser.add_argument('--lrepochs', type=str, default="10,12,14:2", help='epoch ids to downscale lr and the downscale rate')
-parser.add_argument('--wd', type=float, default=0.0, help='weight decay')
+    data_loader = config.init_obj('data_loader', module_data)
+    # setup data_loader instances
+    init_kwags = {
+        "data_path": config["data_loader"]["args"]["data_path"],
+        "data_list": "lists/dtu/val.txt",
+        "mode": "val",
+        "num_srcs": config["data_loader"]["args"]["num_srcs"],
+        "num_depths": config["data_loader"]["args"]["num_srcs"],
+        "interval_scale": config["data_loader"]["args"]["interval_scale"],
+        "shuffle": False,
+        "seq_size": config["data_loader"]["args"]["seq_size"],
+        "batch_size": 1
+    }
+    valid_data_loader = getattr(module_data, config['data_loader']['type'])(**init_kwags)
 
-parser.add_argument('--batch_size', type=int, default=1, help='train batch size')
-parser.add_argument('--numdepth', type=int, default=192, help='the number of depth values')
-parser.add_argument('--interval_scale', type=float, default=1.06, help='the number of depth values')
+    # build models architecture, then print to console
+    model = config.init_obj('arch', module_arch)
+    logger.info(model)
+    """print('Load pretrained model')
+    checkpoint = torch.load('pretrained_model_kitti2.pth')
+    new_state_dict = {}
+    for key, val in checkpoint['state_dict'].items():
+        new_state_dict[key.replace('module.', '')] = val
+    model.load_state_dict(new_state_dict, strict=False)
+    print('Done')"""
 
-parser.add_argument('--loadckpt', default=None, help='load a specific checkpoint')
-parser.add_argument('--logdir', default='./checkpoints/debug', help='the directory to save checkpoints/logs')
-parser.add_argument('--resume', action='store_true', help='continue to train the model')
+    # get function handles of loss and metrics
+    criterion = getattr(module_loss, config['loss'])
 
-parser.add_argument('--summary_freq', type=int, default=50, help='print and summary frequency')
-parser.add_argument('--save_freq', type=int, default=1, help='save checkpoint frequency')
-parser.add_argument('--eval_freq', type=int, default=1, help='eval freq')
+    # build optimizer, learning rate scheduler. delete every lines containing lr_scheduler for disabling scheduler
+    trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+    optimizer = config.init_obj('optimizer', torch.optim, trainable_params)
 
-parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed')
-parser.add_argument('--pin_m', action='store_true', help='data loader pin memory')
-parser.add_argument("--local_rank", type=int, default=0)
+    lr_scheduler = config.init_obj('lr_scheduler', torch.optim.lr_scheduler, optimizer)
 
-parser.add_argument('--share_cr', action='store_true', help='whether share the cost volume regularization')
-parser.add_argument('--ndepths', type=str, default="48,32,8", help='ndepths')
-parser.add_argument('--depth_inter_r', type=str, default="4,2,1", help='depth_intervals_ratio')
-parser.add_argument('--dlossw', type=str, default="0.5,1.0,2.0", help='depth loss weight for different stage')
-parser.add_argument('--cr_base_chs', type=str, default="8,8,8", help='cost regularization base channels')
-parser.add_argument('--grad_method', type=str, default="detach", choices=["detach", "undetach"], help='grad method')
+    trainer = Trainer(model, criterion, optimizer,
+                           config=config,
+                           data_loader=data_loader,
+                           valid_data_loader=valid_data_loader,
+                           lr_scheduler=lr_scheduler)
 
-parser.add_argument('--using_apex', action='store_true', help='using apex, need to install apex')
-parser.add_argument('--sync_bn', action='store_true',help='enabling apex sync BN.')
-parser.add_argument('--opt-level', type=str, default="O0")
-parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
-parser.add_argument('--loss-scale', type=str, default=None)
-parser.add_argument('--few_shots', type=int, default=0)
-parser.add_argument('--depth_scale', type=float, default=1.0)
-
-
-num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
-is_distributed = False
+    trainer.train()
 
 
 # main function
@@ -232,29 +228,12 @@ def train_sample(model, model_loss, optimizer, sample_cuda, is_begin, args, is_t
     # depth_est = model.depth_estimation.depth.data * args.depth_scale
     # depth_loss = F.smooth_l1_loss(depth_est[mask > 0.5], depth_gt[mask > 0.5], reduction='mean')
 
-    if is_testing:
-        scalar_outputs = {"loss": loss,
-                          "depth_loss": depth_loss,
-                          "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
-                          "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
-                          "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
-                          "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),
-                          "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 14),
-                          "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 20),
-
-                          "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, 2.0]),
-                          "thres4mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [2.0, 4.0]),
-                          "thres8mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [4.0, 8.0]),
-                          "thres14mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [8.0, 14.0]),
-                          "thres20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [14.0, 20.0]),
-                          "thres>20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [20.0, 1e5])}
-    else:
-        scalar_outputs = {"loss": loss,
-                          "depth_loss": depth_loss,
-                          "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
-                          "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
-                          "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
-                          "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8)}
+    scalar_outputs = {"loss": loss,
+                      "depth_loss": depth_loss,
+                      "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+                      "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
+                      "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
+                      "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8)}
 
     # image_outputs = {"depth_est": depth_est * mask,
     #                  "depth_est_nomask": depth_est,
@@ -547,3 +526,22 @@ if __name__ == '__main__':
         profile()
     else:
         raise NotImplementedError
+
+
+if __name__ == '__main__':
+    args = argparse.ArgumentParser(description='PyTorch Template')
+    args.add_argument('-c', '--config', default=None, type=str,
+                      help='config file path (default: None)')
+    args.add_argument('-r', '--resume', default=None, type=str,
+                      help='path to latest checkpoint (default: None)')
+    args.add_argument('-d', '--device', default=None, type=str,
+                      help='indices of GPUs to enable (default: all)')
+
+    # custom cli options to modify configuration from default values given in json file.
+    CustomArgs = collections.namedtuple('CustomArgs', 'flags type target')
+    options = [
+        CustomArgs(['--lr', '--learning_rate'], type=float, target='optimizer;args;lr'),
+        CustomArgs(['--bs', '--batch_size'], type=int, target='data_loader;args;batch_size')
+    ]
+    config = ConfigParser.from_args(args, options)
+    main(config)
