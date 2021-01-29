@@ -1,16 +1,18 @@
 {
     "name": "SeqProbMVS",
-    "n_gpu": 2,
+    "n_gpu": 1,
+    "dataset_name": "dtu",
 
     "arch": {
-        "type": "SeqProbMVS",
+        "type": "SeqProbMVSNet",
         "args": {
             "refine": false,
             "ndepths": [48, 32, 8],
             "depth_interals_ratio": [4.0, 2.0, 1.0],
             "share_cr": false,
             "cr_base_chs": [8, 8, 8],
-            "grad_method": "detach"
+            "grad_method": "detach",
+            "pretrained_prior": ""
         }
     },
     "data_loader": {
@@ -35,7 +37,7 @@
             "amsgrad": true
         }
     },
-    "loss": "multi_losses_kitti",
+    "loss": "seq_prob_loss",
     "metrics": [
         "mae", "rmse", "mre"
     ],
@@ -53,9 +55,10 @@
         "save_period": 1,
         "verbosity": 2,
         "logging_every": 200,
-        "monitor": "min val_rmse",
+        "monitor": "min val_mae",
         "early_stop": 20,
         "tensorboard": false,
-        "cfd_thresh": 1
+        "depth_scale": 100.0,
+        "use_prior": true
     }
 }

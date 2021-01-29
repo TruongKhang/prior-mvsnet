@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-#import MYTH
+import MYTH
 
 
 def parse_intrinsics(intrinsics):
@@ -106,19 +106,24 @@ def homo_warping_3D(src_fea, src_proj, ref_proj, depth_values):
     return warped_src_fea
 
 
-"""def homo_warping_2D(src_depths, src_cfds, src_proj, ref_proj):
-    src_p = src_proj[:, :3, :4]
-    ref_p = ref_proj[:, :3, :4]
-    camera_params = torch.cat((ref_p.unsqueeze(1), src_p.unsqueeze(1)), 1)
-    depths = src_depths.unsqueeze(1).repeat(1, 2, 1, 1, 1)
-    cfds = src_cfds.unsqueeze(1).repeat(1, 2, 1, 1, 1)
-    warped_depths, warped_cfds, _ = MYTH.DepthColorAngleReprojectionNeighbours.apply(depths, cfds, camera_params, 1.0)
-    warped_depths = warped_depths[:, -1]
-    warped_cfds = warped_cfds[:, -1]
+def homo_warping_2D(depths, cfds, projs, ref_proj=None):
+    if ref_proj is not None:
+        projs = torch.cat((ref_proj, projs), 1)
+        fake_depth = torch.zeros_like(depths[:, [0], ...])
+        fake_conf = torch.zeros_like(cfds[:, [0], ...])
+        depths = torch.cat((fake_depth, depths), dim=1)
+        cfds = torch.cat((fake_conf, cfds), dim=1)
+
+    intrinsics, extrinsics = projs[:, :, 1, :, :], projs[:, :, 0, :, :]
+    projs = torch.matmul(intrinsics[..., :3, :3], extrinsics[..., :3, :4])
+
+    warped_depths, warped_cfds, _ = MYTH.DepthColorAngleReprojectionNeighbours.apply(depths, cfds, projs, 1.0)
+    warped_depths = warped_depths[:, 1:, ...]
+    warped_cfds = warped_cfds[:, 1:, ...]
     return warped_depths, warped_cfds
 
 
-def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=None, begin_video=None):
+"""def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=None, begin_video=None):
     # src_vol: [B, Ndepth, H, W]
     # src_proj: [B, 4, 4]
     # ref_proj: [B, 4, 4]

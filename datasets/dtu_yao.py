@@ -166,7 +166,6 @@ class MVSDataset(Dataset):
             idx = batch_size - 1
             batch_ptrs = list(range(batch_size))
             id_ptrs = np.zeros(batch_size, dtype=np.uint8)
-            # batch_crop_coords = [(np.random.choice(range_h), np.random.choice(range_w)) for i in range(self.batch_size)]
             while idx < len(self.spliter):
                 for i in range(len(batch_ptrs)):
                     if id_ptrs[i] == 0:
@@ -175,18 +174,15 @@ class MVSDataset(Dataset):
                         self.list_begin.append(False)
                     name, id_data = self.spliter[batch_ptrs[i]]
                     self.generate_img_index.append((name, id_data[id_ptrs[i]]))
-                    # self.list_crop_coords.append(batch_crop_coords[i])
                     id_ptrs[i] += 1
                     if id_ptrs[i] >= len(id_data):
                         idx += 1
                         batch_ptrs[i] = idx
                         id_ptrs[i] = 0
-                        # batch_crop_coords[i] = (np.random.choice(range_h), np.random.choice(range_w))
                     if idx >= len(self.spliter):
                         if i < len(batch_ptrs) - 1:
                             self.generate_img_index = self.generate_img_index[:-(i + 1)]
                             self.list_begin = self.list_begin[:-(i + 1)]
-                            # self.list_crop_coords = self.list_crop_coords[:-(i + 1)]
                         break
         else:
             for ptr in range(len(self.spliter)):
@@ -214,6 +210,8 @@ class MVSDataset(Dataset):
         mask = None
         depth_values = None
         proj_matrices = []
+        input_depths = {"stage1": [], "stage2": [], "stage3": []}
+        input_confs = {"stage1": [], "stage2": [], "stage3": []}
 
         for i, vid in enumerate(view_ids):
             # NOTE that the id in image file names is from 1 to 49 (not 0~48)
@@ -246,6 +244,15 @@ class MVSDataset(Dataset):
                 mask = mask_read_ms
 
             imgs.append(img)
+
+            for stage in ["stage1", "stage2", "stage3"]:
+                in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>3}_{}.pfm'.format(stage, scan, vid, light_idx))
+                in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10
+                input_depths[stage].append(in_depth)
+                in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>3}_{}.pfm'.format(stage, scan, vid, light_idx))
+                in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255
+                input_confs[stage].append(in_conf)
+
         #all
         imgs = np.stack(imgs).transpose([0, 3, 1, 2])
         #ms proj_mats
@@ -260,6 +267,9 @@ class MVSDataset(Dataset):
             "stage2": stage2_pjmats,
             "stage3": stage3_pjmats
         }
+        for stage in input_depths.keys():
+            input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
+            input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
 
         return {"imgs": imgs,
                 "proj_matrices": proj_matrices_ms,

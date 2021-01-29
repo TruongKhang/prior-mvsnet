@@ -59,7 +59,7 @@ def main(config):
     mvsnet_lr_sch = WarmupMultiStepLR(mvsnet_optimizer, milestones, gamma=lr_gamma,
                                       warmup_factor=1.0 / 3, warmup_iters=500)
 
-    priornet_params = filter(lambda p: p.requires_grad, model.prior_net.parameters())
+    priornet_params = filter(lambda p: p.requires_grad, model.pr_net.parameters())
     priornet_optim = optim.Adam(priornet_params, lr=0.00001, amsgrad=True, weight_decay=0.0)
     priornet_lr_sch = optim.lr_scheduler.StepLR(priornet_optim, 5, gamma=0.5)
 
