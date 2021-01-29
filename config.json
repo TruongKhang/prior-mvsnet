@@ -12,27 +12,28 @@
             "share_cr": false,
             "cr_base_chs": [8, 8, 8],
             "grad_method": "detach",
-            "pretrained_prior": ""
+            "pretrained_prior": "checkpoint-epoch7.pth",
+            "pretrained_mvs": "casmvsnet.ckpt"
         }
     },
     "data_loader": {
         "type": "DTULoader",
         "args":{
-            "data_path": "",
-            "data_list": "lists/dtu/train.txt",
+            "data_path": "/dev/dtu_dataset/train",
+            "data_list": "lists/dtu/subset_train.txt",
             "mode": "train",
             "num_srcs": 3,
             "num_depths": 192,
-            "interval_scale": 1.0,
+            "interval_scale": 1.06,
             "shuffle": true,
-            "seq_size": 49,
-            "batch_size": 1
+            "seq_size": 7,
+            "batch_size": 4
         }
     },
     "optimizer": {
         "type": "Adam",
         "args":{
-            "lr": 0.0001,
+            "lr": 0.001,
             "weight_decay": 0,
             "amsgrad": true
         }
@@ -54,11 +55,12 @@
         "save_dir": "saved/",
         "save_period": 1,
         "verbosity": 2,
-        "logging_every": 200,
-        "monitor": "min val_mae",
+        "logging_every": 50,
         "early_stop": 20,
         "tensorboard": false,
         "depth_scale": 100.0,
-        "use_prior": true
+        "use_prior": false,
+        "lrepochs": "10,12,14:2",
+        "dlossw": [0.5, 1.0, 2.0]
     }
 }

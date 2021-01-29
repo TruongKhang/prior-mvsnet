@@ -65,7 +65,7 @@ class DepthNet(nn.Module):
 
 class SeqProbMVSNet(nn.Module):
     def __init__(self, refine=False, ndepths=(48, 32, 8), depth_interals_ratio=(4, 2, 1), share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), pretrained_prior=None):
+                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), pretrained_prior=None, pretrained_mvs=None, use_prior=True):
         super(SeqProbMVSNet, self).__init__()
         self.refine = refine
         self.share_cr = share_cr
@@ -103,11 +103,23 @@ class SeqProbMVSNet(nn.Module):
             self.refine_network = RefineNet()
 
         self.dnet = DepthNet()
-        self.pr_net = PriorNet()
-        if pretrained_prior is not None:
-            ckpt = torch.load(pretrained_prior)
-            self.pr_net.load_state_dict(ckpt['state_dict'])
-        self.mvsnet_parameters = list(self.feature.parameters()) + self.cost_regularization.parameters()
+        if use_prior:
+            self.pr_net = PriorNet()
+            if pretrained_prior is not None:
+                ckpt = torch.load(pretrained_prior)
+                self.pr_net.load_state_dict(ckpt['state_dict'])
+        if pretrained_mvs is not None:
+            ckpt = torch.load(pretrained_mvs)
+            feat_dict, cost_reg_dict = {}, {}
+            for k, v in ckpt['model'].items():
+                if "feature" in k:
+                    feat_dict[k.replace("feature.", "")] = v
+                if "cost_regularization" in k:
+                    cost_reg_dict[k.replace("cost_regularization", "")] = v
+            self.feature.load_state_dict(feat_dict)
+            self.cost_regularization.load_state_dict(cost_reg_dict)
+
+        self.mvsnet_parameters = list(self.feature.parameters()) + list(self.cost_regularization.parameters())
 
     def get_log_prior(self, depth, conf, depth_values):
         log_dist = - conf * torch.abs(depth - depth_values)

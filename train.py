@@ -26,7 +26,7 @@ def main(config):
     # setup data_loader instances
     init_kwags = {
         "data_path": config["data_loader"]["args"]["data_path"],
-        "data_list": "lists/dtu/val.txt",
+        "data_list": "lists/dtu/subset_val.txt",
         "mode": "val",
         "num_srcs": config["data_loader"]["args"]["num_srcs"],
         "num_depths": config["data_loader"]["args"]["num_srcs"],
@@ -37,8 +37,10 @@ def main(config):
     }
     valid_data_loader = getattr(module_data, config['data_loader']['type'])(**init_kwags)
 
+    use_prior = config["trainer"]["use_prior"]
+
     # build models architecture, then print to console
-    model = config.init_obj('arch', module_arch)
+    model = config.init_obj('arch', module_arch, use_prior=use_prior)
     logger.info(model)
     """print('Load pretrained model')
     checkpoint = torch.load('pretrained_model_kitti2.pth')
@@ -58,16 +60,18 @@ def main(config):
     lr_gamma = 1 / float(config["trainer"]["lrepochs"].split(':')[1])
     mvsnet_lr_sch = WarmupMultiStepLR(mvsnet_optimizer, milestones, gamma=lr_gamma,
                                       warmup_factor=1.0 / 3, warmup_iters=500)
-
-    priornet_params = filter(lambda p: p.requires_grad, model.pr_net.parameters())
-    priornet_optim = optim.Adam(priornet_params, lr=0.00001, amsgrad=True, weight_decay=0.0)
-    priornet_lr_sch = optim.lr_scheduler.StepLR(priornet_optim, 5, gamma=0.5)
+    lr_scheduler = {"mvsnet": mvsnet_lr_sch}
+    optimizer = [mvsnet_optimizer]
+    if use_prior:
+        priornet_params = filter(lambda p: p.requires_grad, model.pr_net.parameters())
+        priornet_optim = optim.Adam(priornet_params, lr=0.0001, amsgrad=True, weight_decay=0.0)
+        priornet_lr_sch = optim.lr_scheduler.StepLR(priornet_optim, 5, gamma=0.5)
+        lr_scheduler["prior"] = priornet_lr_sch
+        optimizer.append(priornet_optim)
 
     # lr_scheduler = config.init_obj('lr_scheduler', torch.optim.lr_scheduler, optimizer)
-    lr_scheduler = [mvsnet_lr_sch, priornet_lr_sch]
-    optimizer = [mvsnet_optimizer, priornet_optim]
 
-    writer = SummaryWriter(config.logdir)
+    writer = SummaryWriter(config.log_dir)
 
     trainer = Trainer(model, criterion, optimizer, config=config, data_loader=data_loader,
                       valid_data_loader=valid_data_loader, lr_scheduler=lr_scheduler, writer=writer)

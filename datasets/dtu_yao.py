@@ -246,10 +246,10 @@ class MVSDataset(Dataset):
             imgs.append(img)
 
             for stage in ["stage1", "stage2", "stage3"]:
-                in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>3}_{}.pfm'.format(stage, scan, vid, light_idx))
+                in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>3}_{}.png'.format(stage, scan, vid, light_idx))
                 in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10
                 input_depths[stage].append(in_depth)
-                in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>3}_{}.pfm'.format(stage, scan, vid, light_idx))
+                in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>3}_{}.png'.format(stage, scan, vid, light_idx))
                 in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255
                 input_confs[stage].append(in_conf)
 
@@ -276,4 +276,6 @@ class MVSDataset(Dataset):
                 "depth": depth_ms,
                 "depth_values": depth_values,
                 "mask": mask,
-                "is_begin": self.list_begin[idx]}
+                "is_begin": self.list_begin[idx],
+                "prior_depths": input_depths,
+                "prior_confs": input_confs}

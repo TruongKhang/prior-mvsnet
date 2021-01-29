@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
 
-import dtu_yao, general_eval
+from datasets import dtu_yao, general_eval
 
 np.random.seed(1234)
 

@@ -88,11 +88,11 @@ class Trainer(BaseTrainer):
             outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
                                  depth_scale=self.depth_scale)
 
-            loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms)
+            loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms, dlossw=self.config["trainer"]["dlossw"])
             loss.backward()
             for otm in self.optimizer:
                 otm.step()
-
+            self.lr_scheduler["mvsnet"].step()
             if self.config["dataset_name"] != 'dtu':
                 depth_est, conf_est = {}, {}
                 for i in range(num_stage):
@@ -129,10 +129,11 @@ class Trainer(BaseTrainer):
         if (epoch % self.config["trainer"]["eval_freq"] == 0) or (epoch == self.epochs - 1):
             self._valid_epoch(epoch)
 
-        if self.lr_scheduler is not None:
-            for lrs in self.lr_scheduler:
-                lrs.step()
-            # self.lr_scheduler.step()
+        #if self.lr_scheduler is not None:
+        #    for lrs in self.lr_scheduler:
+        #        lrs.step()
+        if "prior" in self.lr_scheduler.keys():
+            self.lr_scheduler.step()
 
         return self.train_metrics.mean()
 
@@ -191,7 +192,7 @@ class Trainer(BaseTrainer):
             outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
                                  depth_scale=self.depth_scale)
 
-            loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms)
+            loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms, dlossw=self.config["trainer"]["dlossw"])
 
             if self.config["dataset_name"] != 'dtu':
                 depth_est, conf_est = {}, {}
