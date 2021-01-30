@@ -72,7 +72,7 @@ class PriorNet(nn.Module):
 
         self.nconv = NormCNN(pos_fn='softplus')
 
-        self.depth_refinement = nn.Sequential(nn.Conv2d(1, 32, 3, padding=1), #UNet(1, 32, 32, 1, batchnorms=self.bn),
+        self.depth_refinement = nn.Sequential(UNet(1, 32, 32, 1, batchnorms=self.bn),
                                               ResidualBlock(32),
                                               ResidualBlock(32),
                                               ResidualBlock(32),

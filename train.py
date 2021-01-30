@@ -26,10 +26,10 @@ def main(config):
     # setup data_loader instances
     init_kwags = {
         "data_path": config["data_loader"]["args"]["data_path"],
-        "data_list": "lists/dtu/subset_val.txt",
+        "data_list": "lists/dtu/val.txt",
         "mode": "val",
         "num_srcs": config["data_loader"]["args"]["num_srcs"],
-        "num_depths": config["data_loader"]["args"]["num_srcs"],
+        "num_depths": config["data_loader"]["args"]["num_depths"],
         "interval_scale": config["data_loader"]["args"]["interval_scale"],
         "shuffle": False,
         "seq_size": config["data_loader"]["args"]["seq_size"],
@@ -64,7 +64,7 @@ def main(config):
     optimizer = [mvsnet_optimizer]
     if use_prior:
         priornet_params = filter(lambda p: p.requires_grad, model.pr_net.parameters())
-        priornet_optim = optim.Adam(priornet_params, lr=0.0001, amsgrad=True, weight_decay=0.0)
+        priornet_optim = optim.Adam(priornet_params, lr=0.00001, amsgrad=True, weight_decay=0.0)
         priornet_lr_sch = optim.lr_scheduler.StepLR(priornet_optim, 5, gamma=0.5)
         lr_scheduler["prior"] = priornet_lr_sch
         optimizer.append(priornet_optim)

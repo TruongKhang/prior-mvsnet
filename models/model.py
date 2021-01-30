@@ -115,7 +115,7 @@ class SeqProbMVSNet(nn.Module):
                 if "feature" in k:
                     feat_dict[k.replace("feature.", "")] = v
                 if "cost_regularization" in k:
-                    cost_reg_dict[k.replace("cost_regularization", "")] = v
+                    cost_reg_dict[k.replace("cost_regularization.", "")] = v
             self.feature.load_state_dict(feat_dict)
             self.cost_regularization.load_state_dict(cost_reg_dict)
 

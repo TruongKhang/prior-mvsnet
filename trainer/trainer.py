@@ -4,7 +4,7 @@ import torch
 import time
 
 from base import BaseTrainer
-from utils import AbsDepthError_metrics, Thres_metrics, tocuda, DictAverageMeter, inf_loop
+from utils import AbsDepthError_metrics, Thres_metrics, tocuda, DictAverageMeter, inf_loop, tensor2float
 from .data_structure import PriorState
 from models.utils.warping import homo_warping_2D
 
@@ -56,7 +56,7 @@ class Trainer(BaseTrainer):
             depth_gt_ms = sample_cuda["depth"]
             mask_ms = sample_cuda["mask"]
             num_stage = len(self.config["arch"]["args"]["ndepths"])
-            depth_gt = depth_gt_ms["stage{}".format(num_stage)] * self.depth_scale
+            depth_gt = depth_gt_ms["stage{}".format(num_stage)]
             mask = mask_ms["stage{}".format(num_stage)]
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
@@ -133,7 +133,7 @@ class Trainer(BaseTrainer):
         #    for lrs in self.lr_scheduler:
         #        lrs.step()
         if "prior" in self.lr_scheduler.keys():
-            self.lr_scheduler.step()
+            self.lr_scheduler["prior"].step()
 
         return self.train_metrics.mean()
 
@@ -164,7 +164,7 @@ class Trainer(BaseTrainer):
             depth_gt_ms = sample_cuda["depth"]
             mask_ms = sample_cuda["mask"]
             num_stage = len(self.config["arch"]["args"]["ndepths"])
-            depth_gt = depth_gt_ms["stage{}".format(num_stage)] * self.depth_scale
+            depth_gt = depth_gt_ms["stage{}".format(num_stage)]
             mask = mask_ms["stage{}".format(num_stage)]
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
@@ -236,11 +236,11 @@ class Trainer(BaseTrainer):
                 print("Epoch {}/{}, Iter {}/{}, test loss = {:.3f}, depth loss = {:.3f}, time = {:3f}".format(
                     epoch, self.epochs, batch_idx, len(self.valid_data_loader), loss, scalar_outputs["depth_loss"],
                     time.time() - start_time))
-            self.valid_metrics.update(scalar_outputs)
+            self.valid_metrics.update(tensor2float(scalar_outputs))
             del scalar_outputs  # , image_outputs
 
         # save_scalars(logger, 'fulltest', avg_test_scalars.mean(), global_step)
-        # print("avg_test_scalars:", self.valid_metrics.mean())
+        print("avg_test_scalars:", self.valid_metrics.mean())
 
         return self.valid_metrics.mean()
 
