@@ -23,6 +23,8 @@ cudnn.benchmark = True
 
 parser = argparse.ArgumentParser(description='Predict depth, filter, and fuse')
 parser.add_argument('--model', default='mvsnet', help='select model')
+parser.add_argument('--device', default=None, type=str, help='indices of GPUs to enable (default: all)')
+parser.add_argument('--config', default=None, type=str, help='config file path (default: None)')
 
 parser.add_argument('--dataset', default='dtu_yao_eval', help='select dataset')
 parser.add_argument('--testpath', help='testing data dir for some scenes')
@@ -479,7 +481,7 @@ def pcd_filter(testlist, number_worker):
 
 
 if __name__ == '__main__':
-    config = ConfigParser.from_args(args)
+    config = ConfigParser.from_args(parser)
 
     if args.testlist != "all":
         with open(args.testlist) as f:

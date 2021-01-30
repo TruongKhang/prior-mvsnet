@@ -127,7 +127,7 @@ class MVSDataset(Dataset):
         # read pfm depth file
         return np.array(read_pfm(filename)[0], dtype=np.float32)
 
-    def scale_mvs_input(self, img, intrinsics, max_w, max_h, base=32):
+    def scale_mvs_input(self, img, intrinsics, max_w, max_h, base=64):
         h, w = img.shape[:2]
         if h > max_h or w > max_w:
             scale = 1.0 * max_h / h
