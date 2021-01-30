@@ -190,7 +190,6 @@ class MVSDataset(Dataset):
                     else:
                         self.list_begin.append(False)
 
-
     def __getitem__(self, idx):
         global s_h, s_w
         key, real_idx = self.generate_img_index[idx]
@@ -203,7 +202,8 @@ class MVSDataset(Dataset):
         imgs = []
         depth_values = None
         proj_matrices = []
-
+        input_depths = {"stage1": [], "stage2": [], "stage3": []}
+        input_confs = {"stage1": [], "stage2": [], "stage3": []}
         for i, vid in enumerate(view_ids):
             img_filename = os.path.join(self.datapath, '{}/images_post/{:0>8}.jpg'.format(scan, vid))
             if not os.path.exists(img_filename):
@@ -237,7 +237,6 @@ class MVSDataset(Dataset):
                 intrinsics[0, :] *= scale_w
                 intrinsics[1, :] *= scale_h
 
-
             imgs.append(img)
             # extrinsics, intrinsics
             proj_mat = np.zeros(shape=(2, 4, 4), dtype=np.float32)  #
@@ -248,6 +247,14 @@ class MVSDataset(Dataset):
             if i == 0:  # reference view
                 depth_values = np.arange(depth_min, depth_interval * (self.ndepths - 0.5) + depth_min, depth_interval,
                                          dtype=np.float32)
+
+            for stage in ["stage1", "stage2", "stage3"]:
+                in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>8}.png'.format(stage, scan, vid))
+                in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10
+                input_depths[stage].append(in_depth)
+                in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>8}.png'.format(stage, scan, vid))
+                in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255
+                input_confs[stage].append(in_conf)
 
         #all
         imgs = np.stack(imgs).transpose([0, 3, 1, 2])
@@ -263,15 +270,14 @@ class MVSDataset(Dataset):
             "stage2": stage2_pjmats,
             "stage3": stage3_pjmats
         }
-        if 'scan' in scan:
-            scene_idx = int(scan.replace("scan", ""))-1
-        else:
-            scene_idx = 5
+        for stage in input_depths.keys():
+            input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
+            input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
 
         return {"imgs": imgs,
                 "proj_matrices": proj_matrices_ms,
                 "depth_values": depth_values,
                 "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}",
                 "is_begin": self.list_begin[idx],
-                "scene_idx": scene_idx,
-                "trans_norm": self.trans_norm[scan] if self.trans_norm is not None else np.zeros(3, dtype=np.float32)}
+                "prior_depths": input_depths,
+                "prior_confs": input_confs}

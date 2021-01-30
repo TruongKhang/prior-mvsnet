@@ -1,21 +1,19 @@
 import argparse, os, time, sys, gc, cv2
 from PIL import Image
 import torch
-import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
-from torch.utils.data import DataLoader
-import torch.nn.functional as F
 import numpy as np
-import torch.optim as optim
-from datasets import find_dataset_def
-from models import *
-from utils import *
+
+from parse_config import ConfigParser
+import datasets.data_loaders as module_data
+import models.model as module_arch
 from datasets.data_io import read_pfm, save_pfm
 from plyfile import PlyData, PlyElement
 from PIL import Image
 from gipuma import gipuma_filter
-from models.losses import seq_prob_loss
+from utils import tocuda, print_args, generate_pointcloud
+from models.utils.warping import homo_warping_2D
 
 from multiprocessing import Pool
 from functools import partial
@@ -34,7 +32,7 @@ parser.add_argument('--testlist', help='testing scene list')
 parser.add_argument('--batch_size', type=int, default=1, help='testing batch size')
 parser.add_argument('--numdepth', type=int, default=192, help='the number of depth values')
 
-parser.add_argument('--loadckpt', default=None, help='load a specific checkpoint')
+parser.add_argument('--resume', default=None, help='load a specific checkpoint')
 parser.add_argument('--outdir', default='./outputs', help='output dir')
 parser.add_argument('--display', action='store_true', help='display depth images and masks')
 
@@ -57,11 +55,11 @@ parser.add_argument('--save_freq', type=int, default=20, help='save freq of loca
 
 parser.add_argument('--filter_method', type=str, default='normal', choices=["gipuma", "normal"], help="filter method")
 
-#filter
+# filter
 parser.add_argument('--conf', type=float, default=0.9, help='prob confidence')
 parser.add_argument('--thres_view', type=int, default=3, help='threshold of num view')
 
-#filter by gimupa
+# filter by gimupa
 parser.add_argument('--fusibile_exe_path', type=str, default='./fusibile/fusibile')
 parser.add_argument('--prob_threshold', type=float, default='0.8')
 parser.add_argument('--disp_threshold', type=float, default='0.25')
@@ -128,6 +126,7 @@ def read_pair_file(filename):
                 data.append((ref_view, src_views))
     return data
 
+
 def write_cam(file, cam):
     f = open(file, "w")
     f.write('extrinsic\n')
@@ -148,63 +147,77 @@ def write_cam(file, cam):
     f.close()
 
 
-def save_depth(testlist):
+def save_depth(testlist, config):
     for scene in testlist:
-        save_scene_depth([scene])
+        save_scene_depth([scene], config)
 
 
 # run CasMVS model to save depth maps and confidence maps
-def save_scene_depth(testlist):
+def save_scene_depth(testlist, config):
     # dataset, dataloader
-    MVSDataset = find_dataset_def(args.dataset)
-    test_dataset = MVSDataset(args.testpath, testlist, "test", args.num_view, args.numdepth, Interval_Scale,
-                              max_h=args.max_h, max_w=args.max_w, fix_res=args.fix_res, batch_size=1, seq_size=49, shuffle=False)
-    sampler = torch.utils.data.SequentialSampler(test_dataset)
-    TestImgLoader = DataLoader(test_dataset, batch_size=1, shuffle=False, sampler=sampler, num_workers=4) #DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=4, drop_last=False)
 
+    init_kwags = {
+        "data_path": args.testpath,
+        "data_list": testlist,
+        "mode": "test",
+        "num_srcs": args.num_view,
+        "num_depths": args.numdepth,
+        "interval_scale": Interval_Scale,
+        "shuffle": False,
+        "seq_size": 49,
+        "batch_size": 1,
+        "fix_res": args.fix_res,
+        "max_h": args.max_h,
+        "max_w": args.max_w
+    }
+    test_data_loader = getattr(module_data, config['data_loader']['type'])(**init_kwags)
     # model
-    model = SeqProbMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
-                          depth_interals_ratio=[float(d_i) for d_i in args.depth_inter_r.split(",") if d_i],
-                          share_cr=args.share_cr, cr_base_chs=[int(ch) for ch in args.cr_base_chs.split(",") if ch],
-                          grad_method=args.grad_method, is_training=False)
+    # build models architecture
+    model = config.init_obj('arch', module_arch)
 
-    # load checkpoint file specified by args.loadckpt
-    print("loading model {}".format(args.loadckpt))
-    state_dict = torch.load(args.loadckpt, map_location=torch.device("cpu"))
-    model.load_state_dict(state_dict['model'], strict=True)
-    # model = nn.DataParallel(model)
-    model.cuda()
-    # model.eval()
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.latent_scene.parameters()),
-                           lr=0.0001, betas=(0.9, 0.999), weight_decay=0.0)
+    print('Loading checkpoint: {} ...'.format(config.resume))
+    checkpoint = torch.load(str(config.resume))
+    state_dict = checkpoint['state_dict']
+    new_state_dict = {}
+    for key, val in state_dict.items():
+        new_state_dict[key.replace('module.', '')] = val
+    if config['n_gpu'] > 1:
+        model = torch.nn.DataParallel(model)
+    model.load_state_dict(new_state_dict)
 
-    model.train()
+    # prepare models for testing
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
+    model.eval()
 
     # with torch.no_grad():
-    for batch_idx, sample in enumerate(TestImgLoader):
-        sample_cuda = tocuda(sample)
-        is_begin = sample_cuda['is_begin'].type(torch.bool)
-        depth_est, outputs = None, None
+    for batch_idx, sample in enumerate(test_data_loader):
         start_time = time.time()
-        for t in range(5):
-            optimizer.zero_grad()
-            outputs, depth_est = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
-                                       first_view=is_begin, scene_ids=sample_cuda["scene_idx"], depth=depth_est,
-                                       trans_vec=sample_cuda["trans_norm"], iter=t)
-            loss, _ = seq_prob_loss(outputs, None, None, mode="test")
-            loss.backward()
-            optimizer.step()
+        sample_cuda = tocuda(sample)
+        is_begin = sample['is_begin'].type(torch.uint8)
+        num_stage = len(config["arch"]["args"]["ndepths"])
+
+        imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
+        prior = {}
+        depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
+        for stage in cam_params.keys():
+            cam_params_stage = cam_params[stage]
+            warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+            prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
+
+        outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
+                        depth_scale=config["trainer"]["depth_scale"])
 
         end_time = time.time()
-        outputs = tensor2numpy(outputs)
         del sample_cuda
         filenames = sample["filename"]
         cams = sample["proj_matrices"]["stage{}".format(num_stage)].numpy()
         imgs = sample["imgs"].numpy()
-        print('Iter {}/{}, Time:{} Res:{}'.format(batch_idx, len(TestImgLoader), end_time - start_time, imgs[0].shape))
+        print('Iter {}/{}, Time:{} Res:{}'.format(batch_idx, len(test_data_loader), end_time - start_time, imgs[0].shape))
 
         # save depth maps and confidence maps
-        for filename, cam, img, depth_est, photometric_confidence in zip(filenames, cams, imgs, outputs["depth"], outputs["photometric_confidence"]):
+        for filename, cam, img, depth_est, photometric_confidence in zip(filenames, cams, imgs, outputs["depth"],
+                                                                         outputs["photometric_confidence"]):
             img = img[0]  # ref view
             cam = cam[0]  # ref cam
             depth_filename = os.path.join(args.outdir, filename.format('depth_est', '.pfm'))
@@ -259,7 +272,7 @@ def save_scene_depth(testlist):
 # project the reference point cloud into the source view, then project back
 def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, intrinsics_src, extrinsics_src):
     width, height = depth_ref.shape[1], depth_ref.shape[0]
-    ## step1. project reference pixels to the source view
+    # step1. project reference pixels to the source view
     # reference view x, y
     x_ref, y_ref = np.meshgrid(np.arange(0, width), np.arange(0, height))
     x_ref, y_ref = x_ref.reshape([-1]), y_ref.reshape([-1])
@@ -464,7 +477,9 @@ def pcd_filter(testlist, number_worker):
         p.close()
     p.join()
 
+
 if __name__ == '__main__':
+    config = ConfigParser.from_args(args)
 
     if args.testlist != "all":
         with open(args.testlist) as f:
@@ -476,13 +491,13 @@ if __name__ == '__main__':
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    # save_depth(testlist)
+    save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
-    if args.filter_method != "gipuma":
-        #support multi-processing, the default number of worker is 4
-        pcd_filter(testlist, args.num_worker)
-    else:
-        gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
-                      args.fusibile_exe_path)
+    # if args.filter_method != "gipuma":
+    #     #support multi-processing, the default number of worker is 4
+    #     pcd_filter(testlist, args.num_worker)
+    # else:
+    #     gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
+    #                   args.fusibile_exe_path)
 
