@@ -10,9 +10,8 @@ import datasets.data_loaders as module_data
 import models.model as module_arch
 from datasets.data_io import read_pfm, save_pfm
 from plyfile import PlyData, PlyElement
-from PIL import Image
 from gipuma import gipuma_filter
-from utils import tocuda, print_args, generate_pointcloud
+from utils import tocuda, print_args, generate_pointcloud, tensor2numpy
 from models.utils.warping import homo_warping_2D
 
 from multiprocessing import Pool
@@ -209,8 +208,8 @@ def save_depth(testlist, config):
 
             outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
                             depth_scale=config["trainer"]["depth_scale"])
-
             end_time = time.time()
+            outputs = tensor2numpy(outputs)
             del sample_cuda
             filenames = sample["filename"]
             cams = sample["proj_matrices"]["stage{}".format(num_stage)].numpy()
