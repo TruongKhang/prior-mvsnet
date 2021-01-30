@@ -149,13 +149,13 @@ def write_cam(file, cam):
     f.close()
 
 
-def save_depth(testlist, config):
-    for scene in testlist:
-        save_scene_depth([scene], config)
+# def save_depth(testlist, config):
+#     for scene in testlist:
+#         save_scene_depth([scene], config)
 
 
 # run CasMVS model to save depth maps and confidence maps
-def save_scene_depth(testlist, config):
+def save_depth(testlist, config):
     # dataset, dataloader
 
     init_kwags = {
@@ -192,80 +192,81 @@ def save_scene_depth(testlist, config):
     model = model.to(device)
     model.eval()
 
-    # with torch.no_grad():
-    for batch_idx, sample in enumerate(test_data_loader):
-        start_time = time.time()
-        sample_cuda = tocuda(sample)
-        is_begin = sample['is_begin'].type(torch.uint8)
-        num_stage = len(config["arch"]["args"]["ndepths"])
+    with torch.no_grad():
+        for batch_idx, sample in enumerate(test_data_loader):
+            start_time = time.time()
+            sample_cuda = tocuda(sample)
+            is_begin = sample['is_begin'].type(torch.uint8)
+            num_stage = len(config["arch"]["args"]["ndepths"])
 
-        imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
-        prior = {}
-        depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
-        for stage in cam_params.keys():
-            cam_params_stage = cam_params[stage]
-            warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
-            prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
+            imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
+            prior = {}
+            depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
+            for stage in cam_params.keys():
+                cam_params_stage = cam_params[stage]
+                warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+                prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
 
-        outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
-                        depth_scale=config["trainer"]["depth_scale"])
+            outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
+                            depth_scale=config["trainer"]["depth_scale"])
 
-        end_time = time.time()
-        del sample_cuda
-        filenames = sample["filename"]
-        cams = sample["proj_matrices"]["stage{}".format(num_stage)].numpy()
-        imgs = sample["imgs"].numpy()
-        print('Iter {}/{}, Time:{} Res:{}'.format(batch_idx, len(test_data_loader), end_time - start_time, imgs[0].shape))
+            end_time = time.time()
+            del sample_cuda
+            filenames = sample["filename"]
+            cams = sample["proj_matrices"]["stage{}".format(num_stage)].numpy()
+            imgs = sample["imgs"].numpy()
+            print('Iter {}/{}, Time:{} Res:{}'.format(batch_idx, len(test_data_loader), end_time - start_time,
+                                                      imgs[0].shape))
 
-        # save depth maps and confidence maps
-        for filename, cam, img, depth_est, photometric_confidence in zip(filenames, cams, imgs, outputs["depth"],
-                                                                         outputs["photometric_confidence"]):
-            img = img[0]  # ref view
-            cam = cam[0]  # ref cam
-            depth_filename = os.path.join(args.outdir, filename.format('depth_est', '.pfm'))
-            confidence_filename = os.path.join(args.outdir, filename.format('confidence', '.pfm'))
-            cam_filename = os.path.join(args.outdir, filename.format('cams', '_cam.txt'))
-            img_filename = os.path.join(args.outdir, filename.format('images', '.jpg'))
-            ply_filename = os.path.join(args.outdir, filename.format('ply_local', '.ply'))
-            os.makedirs(depth_filename.rsplit('/', 1)[0], exist_ok=True)
-            os.makedirs(confidence_filename.rsplit('/', 1)[0], exist_ok=True)
-            os.makedirs(cam_filename.rsplit('/', 1)[0], exist_ok=True)
-            os.makedirs(img_filename.rsplit('/', 1)[0], exist_ok=True)
-            os.makedirs(ply_filename.rsplit('/', 1)[0], exist_ok=True)
-            # save depth maps
-            save_pfm(depth_filename, depth_est)
-            # depth_est = cv2.resize(depth_est, (args.max_w, args.max_h))
-            # depth_est = Image.fromarray((depth_est*100).astype(np.uint16))
-            # depth_est.save(depth_filename)
-            # np.save(depth_filename, depth_est)
-            # save confidence maps
-            save_pfm(confidence_filename, photometric_confidence)
-            # save cams, img
-            write_cam(cam_filename, cam)
-            img = np.clip(np.transpose(img, (1, 2, 0)) * 255, 0, 255).astype(np.uint8)
-            img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(img_filename, img_bgr)
+            # save depth maps and confidence maps
+            for filename, cam, img, depth_est, photometric_confidence in zip(filenames, cams, imgs, outputs["depth"],
+                                                                             outputs["photometric_confidence"]):
+                img = img[0]  # ref view
+                cam = cam[0]  # ref cam
+                depth_filename = os.path.join(args.outdir, filename.format('depth_est', '.pfm'))
+                confidence_filename = os.path.join(args.outdir, filename.format('confidence', '.pfm'))
+                cam_filename = os.path.join(args.outdir, filename.format('cams', '_cam.txt'))
+                img_filename = os.path.join(args.outdir, filename.format('images', '.jpg'))
+                ply_filename = os.path.join(args.outdir, filename.format('ply_local', '.ply'))
+                os.makedirs(depth_filename.rsplit('/', 1)[0], exist_ok=True)
+                os.makedirs(confidence_filename.rsplit('/', 1)[0], exist_ok=True)
+                os.makedirs(cam_filename.rsplit('/', 1)[0], exist_ok=True)
+                os.makedirs(img_filename.rsplit('/', 1)[0], exist_ok=True)
+                os.makedirs(ply_filename.rsplit('/', 1)[0], exist_ok=True)
+                # save depth maps
+                save_pfm(depth_filename, depth_est)
+                # depth_est = cv2.resize(depth_est, (args.max_w, args.max_h))
+                # depth_est = Image.fromarray((depth_est*100).astype(np.uint16))
+                # depth_est.save(depth_filename)
+                # np.save(depth_filename, depth_est)
+                # save confidence maps
+                save_pfm(confidence_filename, photometric_confidence)
+                # save cams, img
+                write_cam(cam_filename, cam)
+                img = np.clip(np.transpose(img, (1, 2, 0)) * 255, 0, 255).astype(np.uint8)
+                img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(img_filename, img_bgr)
 
-            # vis
-            # print(photometric_confidence.mean(), photometric_confidence.min(), photometric_confidence.max())
-            # import matplotlib.pyplot as plt
-            # plt.subplot(1, 3, 1)
-            # plt.imshow(img)
-            # plt.subplot(1, 3, 2)
-            # plt.imshow((depth_est - depth_est.min())/(depth_est.max() - depth_est.min()))
-            # plt.subplot(1, 3, 3)
-            # plt.imshow(photometric_confidence)
-            # plt.show()
+                # vis
+                # print(photometric_confidence.mean(), photometric_confidence.min(), photometric_confidence.max())
+                # import matplotlib.pyplot as plt
+                # plt.subplot(1, 3, 1)
+                # plt.imshow(img)
+                # plt.subplot(1, 3, 2)
+                # plt.imshow((depth_est - depth_est.min())/(depth_est.max() - depth_est.min()))
+                # plt.subplot(1, 3, 3)
+                # plt.imshow(photometric_confidence)
+                # plt.show()
 
-            if num_stage == 1:
-                downsample_img = cv2.resize(img, (int(img.shape[1] * 0.25), int(img.shape[0] * 0.25)))
-            elif num_stage == 2:
-                downsample_img = cv2.resize(img, (int(img.shape[1] * 0.5), int(img.shape[0] * 0.5)))
-            elif num_stage == 3:
-                downsample_img = img
+                if num_stage == 1:
+                    downsample_img = cv2.resize(img, (int(img.shape[1] * 0.25), int(img.shape[0] * 0.25)))
+                elif num_stage == 2:
+                    downsample_img = cv2.resize(img, (int(img.shape[1] * 0.5), int(img.shape[0] * 0.5)))
+                elif num_stage == 3:
+                    downsample_img = img
 
-            if batch_idx % args.save_freq == 0:
-                generate_pointcloud(downsample_img, depth_est, ply_filename, cam[1, :3, :3])
+                if batch_idx % args.save_freq == 0:
+                    generate_pointcloud(downsample_img, depth_est, ply_filename, cam[1, :3, :3])
 
     torch.cuda.empty_cache()
     gc.collect()
