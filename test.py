@@ -223,7 +223,7 @@ def save_depth(testlist, config):
             outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
                             depth_scale=config["trainer"]["depth_scale"])
             if config["dataset_name"] != 'dtu':
-                final_depth = outputs["depths"].detach()
+                final_depth = outputs["depth"].detach()
                 final_conf = outputs["photometric_confidence"].detach()
                 h, w = final_depth.size(1), final_depth.size(2)
                 depth_est = {"stage1": F.interpolate(final_depth.unsqueeze(1), [h // 4, w // 4], mode='nearest'),
