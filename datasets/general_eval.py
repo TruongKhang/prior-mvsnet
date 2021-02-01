@@ -73,13 +73,23 @@ class MVSDataset(Dataset):
                 # viewpoints
                 for view_idx in range(num_viewpoint):
                     ref_view = int(f.readline().rstrip())
-                    src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
+                    # src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
+
+                    # uncommet this to evaluate on tanks tand temples
+                    if ref_view < (self.nviews - 1):
+                        left = 0
+                    else:
+                        left = ref_view - (self.nviews - 1)
+                    if (left + self.nviews) > num_viewpoint:
+                        left = num_viewpoint - self.nviews
+                    f.readline() # ignore the given source views
+                    src_views = [x for x in range(left, left+self.nviews) if x != ref_view]
 
                     # filter by no src view and fill to nviews
                     if len(src_views) > 0:
-                        if len(src_views) < self.nviews:
-                            print("{}< num_views:{}".format(len(src_views), self.nviews))
-                            src_views += [src_views[0]] * (self.nviews - len(src_views))
+                        # if len(src_views) < self.nviews:
+                        #     print("{}< num_views:{}".format(len(src_views), self.nviews))
+                        #     src_views += [src_views[0]] * (self.nviews - len(src_views))
                         src_views = src_views[:(self.nviews-1)]
                         if scan not in metas:
                             metas[scan] = [(ref_view, src_views)]
@@ -202,8 +212,8 @@ class MVSDataset(Dataset):
         imgs = []
         depth_values = None
         proj_matrices = []
-        input_depths = {"stage1": [], "stage2": [], "stage3": []}
-        input_confs = {"stage1": [], "stage2": [], "stage3": []}
+        # input_depths = {"stage1": [], "stage2": [], "stage3": []}
+        # input_confs = {"stage1": [], "stage2": [], "stage3": []}
         for i, vid in enumerate(view_ids):
             img_filename = os.path.join(self.datapath, '{}/images_post/{:0>8}.jpg'.format(scan, vid))
             if not os.path.exists(img_filename):
@@ -248,13 +258,13 @@ class MVSDataset(Dataset):
                 depth_values = np.arange(depth_min, depth_interval * (self.ndepths - 0.5) + depth_min, depth_interval,
                                          dtype=np.float32)
 
-            for stage in ["stage1", "stage2", "stage3"]:
-                in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>8}.png'.format(stage, scan, vid))
-                in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10
-                input_depths[stage].append(in_depth)
-                in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>8}.png'.format(stage, scan, vid))
-                in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255
-                input_confs[stage].append(in_conf)
+            # for stage in ["stage1", "stage2", "stage3"]:
+            #     in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>8}.png'.format(stage, scan, vid))
+            #     in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10
+            #     input_depths[stage].append(in_depth)
+            #     in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>8}.png'.format(stage, scan, vid))
+            #     in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255
+            #     input_confs[stage].append(in_conf)
 
         #all
         imgs = np.stack(imgs).transpose([0, 3, 1, 2])
@@ -270,14 +280,14 @@ class MVSDataset(Dataset):
             "stage2": stage2_pjmats,
             "stage3": stage3_pjmats
         }
-        for stage in input_depths.keys():
-            input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
-            input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
+        # for stage in input_depths.keys():
+        #     input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
+        #     input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
 
         return {"imgs": imgs,
                 "proj_matrices": proj_matrices_ms,
                 "depth_values": depth_values,
                 "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}",
-                "is_begin": self.list_begin[idx],
-                "prior_depths": input_depths,
-                "prior_confs": input_confs}
+                "is_begin": self.list_begin[idx]} #,
+                #"prior_depths": input_depths,
+                #"prior_confs": input_confs}

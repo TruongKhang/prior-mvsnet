@@ -106,9 +106,9 @@ def homo_warping_3D(src_fea, src_proj, ref_proj, depth_values):
     return warped_src_fea
 
 
-def homo_warping_2D(depths, cfds, projs, ref_proj=None):
-    if ref_proj is not None:
-        projs = torch.cat((ref_proj, projs), 1)
+def homo_warping_2D(depths, cfds, projs):
+    if depths.size(1) < projs.size(1):
+        # projs = torch.cat((ref_proj, projs), 1)
         fake_depth = torch.zeros_like(depths[:, [0], ...])
         fake_conf = torch.zeros_like(cfds[:, [0], ...])
         depths = torch.cat((fake_depth, depths), dim=1)

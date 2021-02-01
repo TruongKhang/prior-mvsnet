@@ -145,7 +145,7 @@ class EnforcePos(object):
 
 class NormCNN(nn.Module):
 
-    def __init__(self, pos_fn=None, num_channels=2):
+    def __init__(self, pos_fn=None, num_channels=4):
         super().__init__()
 
         self.pos_fn = pos_fn
@@ -159,6 +159,16 @@ class NormCNN(nn.Module):
         self.nconv6 = NConv2d(2 * num_channels, num_channels, (3, 3), pos_fn, 'p', padding=1)
 
         self.nconv7 = NConv2d(num_channels, 1, (1, 1), pos_fn, 'k')
+
+    def pad_and_concat(self, x1, x2):
+        h1, w1 = x1.size(2), x1.size(3)
+        h2, w2 = x2.size(2), x2.size(3)
+        dl = (w1 - w2) // 2
+        dr = w1 - w2 - dl
+        dt = (h1 - h2) // 2
+        db = h1 - h2 - dt
+        x2_padded = F.pad(x2, [dl, dr, dt, db], mode='replicate')
+        return torch.cat((x1, x2_padded), dim=1)
 
     def forward(self, x0, c0):
         x1, c1 = self.nconv1(x0, c0)
@@ -192,17 +202,20 @@ class NormCNN(nn.Module):
         # Upsample 1
         x4 = F.interpolate(x4_ds, c3_ds.size()[2:], mode='nearest')
         c4 = F.interpolate(c4_ds, c3_ds.size()[2:], mode='nearest')
-        x34_ds, c34_ds = self.nconv4(torch.cat((x3_ds, x4), 1), torch.cat((c3_ds, c4), 1))
+        # x34_ds, c34_ds = self.nconv4(torch.cat((x3_ds, x4), 1), torch.cat((c3_ds, c4), 1))
+        x34_ds, c34_ds = self.nconv4(self.pad_and_concat(x3_ds, x4), self.pad_and_concat(c3_ds, c4))
 
         # Upsample 2
         x34 = F.interpolate(x34_ds, c2_ds.size()[2:], mode='nearest')
         c34 = F.interpolate(c34_ds, c2_ds.size()[2:], mode='nearest')
-        x23_ds, c23_ds = self.nconv5(torch.cat((x2_ds, x34), 1), torch.cat((c2_ds, c34), 1))
+        # x23_ds, c23_ds = self.nconv5(torch.cat((x2_ds, x34), 1), torch.cat((c2_ds, c34), 1))
+        x23_ds, c23_ds = self.nconv5(self.pad_and_concat(x2_ds, x34), self.pad_and_concat(c2_ds, c34))
 
         # Upsample 3
         x23 = F.interpolate(x23_ds, x0.size()[2:], mode='nearest')
         c23 = F.interpolate(c23_ds, c0.size()[2:], mode='nearest')
-        xout, cout = self.nconv6(torch.cat((x23, x1), 1), torch.cat((c23, c1), 1))
+        # xout, cout = self.nconv6(torch.cat((x23, x1), 1), torch.cat((c23, c1), 1))
+        xout, cout = self.nconv6(self.pad_and_concat(x23, x1), self.pad_and_concat(c23, c1))
 
         xout, cout = self.nconv7(xout, cout)
 

@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import torch
+import torch.nn.functional as F
 import time
 
 from base import BaseTrainer
@@ -61,7 +62,7 @@ class Trainer(BaseTrainer):
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
 
-            if is_begin.sum() < len(is_begin):
+            if is_begin.sum().item() < len(is_begin):
                 prior_state.reset()
             prior = None
             if self.use_prior:
@@ -69,14 +70,13 @@ class Trainer(BaseTrainer):
                 if self.config["dataset_name"] == 'dtu':
                     depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"] # [B,N,1,H,W]
                     for stage in cam_params.keys():
-                        cam_params_stage = cam_params[stage]
-                        warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+                        warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params[stage])
                         prior[stage] = warped_depths / self.depth_scale, warped_confs
                 else:
                     if prior_state.size() == 4:
-                        depths, confs, proj_matrices = prior_state.get()
+                        depths, confs = prior_state.get()
                         for stage in depths.keys():
-                            warped_depths, warped_confs = homo_warping_2D(depths, confs, proj_matrices, ref_proj=cam_params)
+                            warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params[stage])
                             prior[stage] = warped_depths / self.depth_scale, warped_confs
                     else:
                         prior = None
@@ -95,12 +95,16 @@ class Trainer(BaseTrainer):
                 otm.step()
             self.lr_scheduler["mvsnet"].step()
             if self.config["dataset_name"] != 'dtu':
-                depth_est, conf_est = {}, {}
-                for i in range(num_stage):
-                    stage = "stage%d" % (i+1)
-                    depth_est[stage] = outputs[stage]["depth"].detach()
-                    conf_est[stage] = outputs[stage]["photometric_confidence"].detach()
-                prior_state.update(depth_est, conf_est, cam_params)
+                final_depth = outputs["depths"].detach()
+                final_conf = outputs["photometric_confidence"].detach()
+                h, w = final_depth.size(1), final_depth.size(2)
+                depth_est = {"stage1": F.interpolate(final_depth.unsqueeze(1), [h//4, w//4], mode='nearest'),
+                             "stage2": F.interpolate(final_depth.unsqueeze(1), [h//2, w//2], mode='nearest'),
+                             "stage3": final_depth.unsqueeze(1)}
+                conf_est = {"stage1": F.interpolate(final_conf.unsqueeze(1), [h // 4, w // 4], mode='nearest'),
+                            "stage2": F.interpolate(final_conf.unsqueeze(1), [h // 2, w // 2], mode='nearest'),
+                            "stage3": final_conf.unsqueeze(1)}
+                prior_state.update(depth_est, conf_est)
 
             # scalar_outputs = {"loss": loss,
             #                   "depth_loss": depth_loss,
@@ -167,7 +171,7 @@ class Trainer(BaseTrainer):
                 mask = mask_ms["stage{}".format(num_stage)]
 
                 imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
-                if is_begin.sum() < len(is_begin):
+                if is_begin.sum().item() < len(is_begin):
                     prior_state.reset()
                 prior = None
                 if self.use_prior:
@@ -175,15 +179,14 @@ class Trainer(BaseTrainer):
                     if self.config["dataset_name"] == 'dtu':
                         depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
                         for stage in cam_params.keys():
-                            cam_params_stage = cam_params[stage]
-                            warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+                            warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params[stage])
                             prior[stage] = warped_depths / self.depth_scale, warped_confs
                     else:
                         if prior_state.size() == 4:
-                            depths, confs, proj_matrices = prior_state.get()
+                            depths, confs = prior_state.get()
                             for stage in depths.keys():
-                                warped_depths, warped_confs = homo_warping_2D(depths, confs, proj_matrices,
-                                                                              ref_proj=cam_params)
+                                warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage],
+                                                                              cam_params[stage])
                                 prior[stage] = warped_depths / self.depth_scale, warped_confs
                         else:
                             prior = None
@@ -196,12 +199,16 @@ class Trainer(BaseTrainer):
                                                   use_prior=self.use_prior)
 
                 if self.config["dataset_name"] != 'dtu':
-                    depth_est, conf_est = {}, {}
-                    for i in range(num_stage):
-                        stage = "stage%d" % (i + 1)
-                        depth_est[stage] = outputs[stage]["depth"].detach()
-                        conf_est[stage] = outputs[stage]["photometric_confidence"].detach()
-                    prior_state.update(depth_est, conf_est, cam_params)
+                    final_depth = outputs["depths"].detach()
+                    final_conf = outputs["photometric_confidence"].detach()
+                    h, w = final_depth.size(1), final_depth.size(2)
+                    depth_est = {"stage1": F.interpolate(final_depth.unsqueeze(1), [h // 4, w // 4], mode='nearest'),
+                                 "stage2": F.interpolate(final_depth.unsqueeze(1), [h // 2, w // 2], mode='nearest'),
+                                 "stage3": final_depth.unsqueeze(1)}
+                    conf_est = {"stage1": F.interpolate(final_conf.unsqueeze(1), [h // 4, w // 4], mode='nearest'),
+                                "stage2": F.interpolate(final_conf.unsqueeze(1), [h // 2, w // 2], mode='nearest'),
+                                "stage3": final_conf.unsqueeze(1)}
+                    prior_state.update(depth_est, conf_est)
 
                 depth_est = outputs["depth"].detach()
 
