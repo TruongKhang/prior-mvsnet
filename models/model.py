@@ -193,8 +193,11 @@ class SeqProbMVSNet(nn.Module):
             depth = depth_regression(posterior_vol, depth_values_stage)
             final_conf = conf_regression(posterior_vol)
 
-            outputs_stage = {"depth": depth, "photometric_confidence": final_conf,
-                             "prior_depth": est_prior_depth, "prior_conf": est_prior_conf}
+            if prior is not None:
+                outputs_stage = {"depth": depth, "photometric_confidence": final_conf,
+                                 "prior_depth": est_prior_depth, "prior_conf": est_prior_conf}
+            else:
+                outputs_stage = {"depth": depth, "photometric_confidence": final_conf}
             outputs[stage_name] = outputs_stage
             outputs.update(outputs_stage)
             # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()

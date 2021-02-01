@@ -18,7 +18,7 @@ def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
         mask = mask > 0.5
 
         depth_loss = F.smooth_l1_loss(depth_est[mask], depth_gt[mask], reduction='mean')
-        if use_prior:
+        if use_prior and ("prior_depth" in stage_inputs):
             scaled_depth_gt = depth_gt.unsqueeze(1) / depth_scale
             target = (scaled_depth_gt, mask.unsqueeze(1))
             prior_loss = masked_prior_loss(stage_inputs["prior_depth"], stage_inputs["prior_conf"], target)
