@@ -204,7 +204,6 @@ class Trainer(BaseTrainer):
                     prior_state.update(depth_est, conf_est, cam_params)
 
                 depth_est = outputs["depth"].detach()
-                prior_depth_est = outputs["prior_depth"].squeeze(1)
 
                 scalar_outputs = {"loss": loss,
                                   "depth_loss": depth_loss,
@@ -228,6 +227,7 @@ class Trainer(BaseTrainer):
                                                                                [20.0, 1e5]),
                                   }
 
+                """prior_depth_est = outputs["prior_depth"].squeeze(1)
                 image_outputs = {"depth_est": depth_est * mask,
                                  "depth_est_nomask": depth_est,
                                  "depth_gt": sample_cuda["depth"]["stage1"].cpu(),
@@ -235,8 +235,8 @@ class Trainer(BaseTrainer):
                                  "mask": sample_cuda["mask"]["stage1"].cpu(),
                                  "errormap": (depth_est - depth_gt).abs() * mask,
                                  "prior_depth": prior_depth_est * mask,
-                                 "error_prior_depth": (prior_depth_est - depth_gt).abs().mask}
-                save_images(self.writer, 'val', tensor2numpy(image_outputs), batch_idx)
+                                 "error_prior_depth": (prior_depth_est - depth_gt).abs() * mask}
+                save_images(self.writer, 'val', tensor2numpy(image_outputs), batch_idx)"""
 
                 if batch_idx % self.log_step == 0:
                     # save_scalars(logger, 'test', scalar_outputs, global_step)
