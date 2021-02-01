@@ -62,7 +62,7 @@ class Trainer(BaseTrainer):
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
 
-            if is_begin.sum().item() < len(is_begin):
+            if is_begin.sum().item() > 0:
                 prior_state.reset()
             prior = None
             if self.use_prior:
@@ -171,7 +171,7 @@ class Trainer(BaseTrainer):
                 mask = mask_ms["stage{}".format(num_stage)]
 
                 imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
-                if is_begin.sum().item() < len(is_begin):
+                if is_begin.sum().item() > 0:
                     prior_state.reset()
                 prior = None
                 if self.use_prior:

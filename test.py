@@ -4,6 +4,7 @@ import torch
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import numpy as np
+import torch.nn.functional as F
 
 from parse_config import ConfigParser
 import datasets.data_loaders as module_data
@@ -13,6 +14,7 @@ from plyfile import PlyData, PlyElement
 from gipuma import gipuma_filter
 from utils import tocuda, print_args, generate_pointcloud, tensor2numpy
 from models.utils.warping import homo_warping_2D
+from trainer.data_structure import PriorState
 
 from multiprocessing import Pool
 from functools import partial
@@ -190,7 +192,7 @@ def save_depth(testlist, config):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
-
+    prior_state = PriorState(max_size=4)
     with torch.no_grad():
         for batch_idx, sample in enumerate(test_data_loader):
             start_time = time.time()
@@ -199,15 +201,39 @@ def save_depth(testlist, config):
             num_stage = len(config["arch"]["args"]["ndepths"])
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
+
+            if is_begin.sum().item() > 0:
+                prior_state.reset()
             prior = {}
-            depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
-            for stage in cam_params.keys():
-                cam_params_stage = cam_params[stage]
-                warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
-                prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
+            if config["dataset_name"] == 'dtu':
+                depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
+                for stage in cam_params.keys():
+                    warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params[stage])
+                    prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
+            else:
+                if prior_state.size() == 4:
+                    depths, confs = prior_state.get()
+                    for stage in depths.keys():
+                        warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage],
+                                                                      cam_params[stage])
+                        prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
+                else:
+                    prior = None
 
             outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
                             depth_scale=config["trainer"]["depth_scale"])
+            if config["dataset_name"] != 'dtu':
+                final_depth = outputs["depths"].detach()
+                final_conf = outputs["photometric_confidence"].detach()
+                h, w = final_depth.size(1), final_depth.size(2)
+                depth_est = {"stage1": F.interpolate(final_depth.unsqueeze(1), [h // 4, w // 4], mode='nearest'),
+                             "stage2": F.interpolate(final_depth.unsqueeze(1), [h // 2, w // 2], mode='nearest'),
+                             "stage3": final_depth.unsqueeze(1)}
+                conf_est = {"stage1": F.interpolate(final_conf.unsqueeze(1), [h // 4, w // 4], mode='nearest'),
+                            "stage2": F.interpolate(final_conf.unsqueeze(1), [h // 2, w // 2], mode='nearest'),
+                            "stage3": final_conf.unsqueeze(1)}
+                prior_state.update(depth_est, conf_est)
+
             end_time = time.time()
             outputs = tensor2numpy(outputs)
             del sample_cuda
@@ -257,15 +283,15 @@ def save_depth(testlist, config):
                 # plt.imshow(photometric_confidence)
                 # plt.show()
 
-                if num_stage == 1:
-                    downsample_img = cv2.resize(img, (int(img.shape[1] * 0.25), int(img.shape[0] * 0.25)))
-                elif num_stage == 2:
-                    downsample_img = cv2.resize(img, (int(img.shape[1] * 0.5), int(img.shape[0] * 0.5)))
-                elif num_stage == 3:
-                    downsample_img = img
-
-                if batch_idx % args.save_freq == 0:
-                    generate_pointcloud(downsample_img, depth_est, ply_filename, cam[1, :3, :3])
+                # if num_stage == 1:
+                #     downsample_img = cv2.resize(img, (int(img.shape[1] * 0.25), int(img.shape[0] * 0.25)))
+                # elif num_stage == 2:
+                #     downsample_img = cv2.resize(img, (int(img.shape[1] * 0.5), int(img.shape[0] * 0.5)))
+                # elif num_stage == 3:
+                #     downsample_img = img
+                #
+                # if batch_idx % args.save_freq == 0:
+                #     generate_pointcloud(downsample_img, depth_est, ply_filename, cam[1, :3, :3])
 
     torch.cuda.empty_cache()
     gc.collect()
