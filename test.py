@@ -15,6 +15,7 @@ from gipuma import gipuma_filter
 from utils import tocuda, print_args, generate_pointcloud, tensor2numpy
 from models.utils.warping import homo_warping_2D
 from trainer.data_structure import PriorState
+from models.cas_mvsnet import CascadeMVSNet
 
 from multiprocessing import Pool
 from functools import partial
@@ -51,6 +52,7 @@ parser.add_argument('--num_view', type=int, default=3, help='num of view')
 parser.add_argument('--max_h', type=int, default=864, help='testing max h')
 parser.add_argument('--max_w', type=int, default=1152, help='testing max w')
 parser.add_argument('--fix_res', action='store_true', help='scene all using same res')
+parser.add_argument('--depth_scale', type=float, default=1.0, help='depth scale')
 
 parser.add_argument('--num_worker', type=int, default=4, help='depth_filer worker')
 parser.add_argument('--save_freq', type=int, default=20, help='save freq of local pcd')
@@ -65,8 +67,8 @@ parser.add_argument('--thres_view', type=int, default=3, help='threshold of num 
 # filter by gimupa
 parser.add_argument('--fusibile_exe_path', type=str, default='./fusibile/fusibile')
 parser.add_argument('--prob_threshold', type=float, default='0.8')
-parser.add_argument('--disp_threshold', type=float, default='0.25')
-parser.add_argument('--num_consistent', type=float, default='4')
+parser.add_argument('--disp_threshold', type=float, default='0.2')
+parser.add_argument('--num_consistent', type=float, default='3')
 
 
 # parse arguments and check
@@ -188,11 +190,20 @@ def save_depth(testlist, config):
         model = torch.nn.DataParallel(model)
     model.load_state_dict(new_state_dict)
 
+    casmvsnet = CascadeMVSNet(**config["arch"]["args"])
+    print('Loading pretrained CasMVSNet')
+    ckpt = torch.load('casmvsnet.ckpt')
+    casmvsnet.load_state_dict(ckpt['net'])
+
     # prepare models for testing
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
-    prior_state = PriorState(max_size=4)
+
+    casmvsnet = casmvsnet.to(device)
+    casmvsnet.eval()
+
+    prior_state = PriorState(max_size=args.num_view-1)
     with torch.no_grad():
         for batch_idx, sample in enumerate(test_data_loader):
             start_time = time.time()
@@ -209,19 +220,22 @@ def save_depth(testlist, config):
                 depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
                 for stage in cam_params.keys():
                     warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params[stage])
-                    prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
+                    prior[stage] = warped_depths / args.depth_scale, warped_confs
             else:
-                if prior_state.size() == 4:
+                if prior_state.size() == (args.num_view-1):
                     depths, confs = prior_state.get()
                     for stage in depths.keys():
                         warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage],
                                                                       cam_params[stage])
-                        prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
+                        prior[stage] = warped_depths / args.depth_scale, warped_confs
                 else:
                     prior = None
+            if prior is None:
+                outputs = casmvsnet(imgs, cam_params, sample_cuda["depth_values"])
+            else:
+                outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
+                                depth_scale=args.depth_scale)
 
-            outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
-                            depth_scale=config["trainer"]["depth_scale"])
             if config["dataset_name"] != 'dtu':
                 final_depth = outputs["depth"].detach()
                 final_conf = outputs["photometric_confidence"].detach()
@@ -522,10 +536,10 @@ if __name__ == '__main__':
     save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
-    # if args.filter_method != "gipuma":
+    #if args.filter_method != "gipuma":
     #     #support multi-processing, the default number of worker is 4
-    #     pcd_filter(testlist, args.num_worker)
-    # else:
-    #     gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
-    #                   args.fusibile_exe_path)
+    #    pcd_filter(testlist, args.num_worker)
+    #else:
+    #    gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
+    #                  args.fusibile_exe_path)
 
