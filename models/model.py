@@ -100,7 +100,7 @@ class SeqProbMVSNet(nn.Module):
                                                                  base_channels=self.cr_base_chs[i])
                                                       for i in range(self.num_stage)])
         if self.refine:
-            self.refine_network = RefineNet()
+            self.refine_network = RefineNet(vol_channels=ndepths)
 
         self.dnet = DepthNet()
         if use_prior:
@@ -128,7 +128,6 @@ class SeqProbMVSNet(nn.Module):
         log_dist_masked = torch.zeros_like(depth_values)
         log_dist = - conf * torch.abs(depth - depth_values)
         log_dist_masked[mask] = log_dist[mask]
-        # regl = torch.log(conf/2 + 1e-16)
         return log_dist_masked
 
     def forward(self, imgs, proj_matrices, depth_values, prior=None, depth_scale=1.0):
@@ -183,7 +182,7 @@ class SeqProbMVSNet(nn.Module):
 
             log_likelihood = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
-                                       cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx], log=True)
+                                       cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx], log=False)
 
             if prior is not None:
                 prior_depths, prior_confs = prior[stage_name]
@@ -193,13 +192,18 @@ class SeqProbMVSNet(nn.Module):
                 log_prior = 0.0
                 est_prior_depth, est_prior_conf = None, None
 
-            log_posterior = log_likelihood + log_prior
-            posterior_vol = F.softmax(log_posterior, dim=1)
-            depth = depth_regression(posterior_vol, depth_values_stage)
-            final_conf = conf_regression(posterior_vol)
-            likelihood = F.softmax(log_likelihood, dim=1)
-            mvs_depth = depth_regression(likelihood, depth_values_stage)
-            mvs_conf = conf_regression(likelihood)
+            # log_posterior = log_likelihood + log_prior
+            # posterior_vol = F.softmax(log_posterior, dim=1)
+            # depth = depth_regression(posterior_vol, depth_values_stage)
+            # final_conf = conf_regression(posterior_vol)
+            # likelihood = F.softmax(log_likelihood, dim=1)
+            # mvs_depth = depth_regression(likelihood, depth_values_stage)
+            # mvs_conf = conf_regression(likelihood)
+
+            if self.refine:
+                if prior is not None:
+                    depth, final_conf = self.refine_network(log_likelihood, stage_idx, (est_prior_depth, est_prior_conf))
+
 
             if prior is not None:
                 outputs_stage = {"depth": depth, "photometric_confidence": final_conf,
