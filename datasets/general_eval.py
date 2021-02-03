@@ -84,6 +84,7 @@ class MVSDataset(Dataset):
                         left = num_viewpoint - self.nviews
                     f.readline() # ignore the given source views
                     src_views = [x for x in range(left, left+self.nviews) if x != ref_view]
+                    src_views = src_views[::-1]
 
                     # filter by no src view and fill to nviews
                     if len(src_views) > 0:

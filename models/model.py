@@ -122,9 +122,14 @@ class SeqProbMVSNet(nn.Module):
         self.mvsnet_parameters = list(self.feature.parameters()) + list(self.cost_regularization.parameters())
 
     def get_log_prior(self, depth, conf, depth_values):
+        min_depth, max_depth = depth_values[:, [0], ...], depth_values[:, [-1], ...]
+        mask = (depth >= min_depth) & (depth <= max_depth)
+        mask = mask.repeat(1, depth_values.size(1), 1, 1)
+        log_dist_masked = torch.zeros_like(depth_values)
         log_dist = - conf * torch.abs(depth - depth_values)
+        log_dist_masked[mask] = log_dist[mask]
         # regl = torch.log(conf/2 + 1e-16)
-        return log_dist
+        return log_dist_masked
 
     def forward(self, imgs, proj_matrices, depth_values, prior=None, depth_scale=1.0):
 
@@ -192,10 +197,13 @@ class SeqProbMVSNet(nn.Module):
             posterior_vol = F.softmax(log_posterior, dim=1)
             depth = depth_regression(posterior_vol, depth_values_stage)
             final_conf = conf_regression(posterior_vol)
+            likelihood = F.softmax(log_likelihood, dim=1)
+            mvs_depth = depth_regression(likelihood, depth_values_stage)
+            mvs_conf = conf_regression(likelihood)
 
             if prior is not None:
                 outputs_stage = {"depth": depth, "photometric_confidence": final_conf,
-                                 "prior_depth": est_prior_depth, "prior_conf": est_prior_conf}
+                                 "prior_depth": est_prior_depth, "prior_conf": est_prior_conf, "mvs_depth": mvs_depth, "mvs_conf": mvs_conf}
             else:
                 outputs_stage = {"depth": depth, "photometric_confidence": final_conf}
             outputs[stage_name] = outputs_stage
