@@ -193,6 +193,7 @@ def save_depth(testlist, config):
     casmvsnet = CascadeMVSNet(**config["arch"]["args"])
     print('Loading pretrained CasMVSNet')
     ckpt = torch.load('casmvsnet.ckpt')
+
     casmvsnet.load_state_dict(ckpt['model'])
 
     # prepare models for testing
@@ -536,10 +537,10 @@ if __name__ == '__main__':
     save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
+
     if args.filter_method != "gipuma":
     #     #support multi-processing, the default number of worker is 4
         pcd_filter(testlist, args.num_worker)
     else:
         gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
                       args.fusibile_exe_path)
-
