@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
     depth_loss_weights = kwargs.get("dlossw", None)
-    use_prior = kwargs.get("use_prior", False)
+    use_prior = kwargs.get("use_prior_loss", False)
     depth_scale = kwargs.get("depth_scale", 1.0)
 
     total_loss = torch.tensor(0.0, dtype=torch.float32, device=mask_ms["stage1"].device, requires_grad=False)

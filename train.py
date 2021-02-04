@@ -26,7 +26,7 @@ def main(config):
     # setup data_loader instances
     init_kwags = {
         "data_path": config["data_loader"]["args"]["data_path"],
-        "data_list": "lists/dtu/val.txt",
+        "data_list": "lists/dtu/subsub.txt",
         "mode": "val",
         "num_srcs": config["data_loader"]["args"]["num_srcs"],
         "num_depths": config["data_loader"]["args"]["num_depths"],
@@ -37,17 +37,18 @@ def main(config):
     }
     valid_data_loader = getattr(module_data, config['data_loader']['type'])(**init_kwags)
 
+    use_prior_loss = config["trainer"]["use_prior_loss"]
     use_prior = config["trainer"]["use_prior"]
 
     # build models architecture, then print to console
     model = config.init_obj('arch', module_arch, use_prior=use_prior)
     logger.info(model)
     """print('Load pretrained model')
-    checkpoint = torch.load('pretrained_model_kitti2.pth')
+    checkpoint = torch.load('saved/0203_050241/checkpoint-epoch1.pth')
     new_state_dict = {}
     for key, val in checkpoint['state_dict'].items():
         new_state_dict[key.replace('module.', '')] = val
-    model.load_state_dict(new_state_dict, strict=False)
+    model.load_state_dict(new_state_dict)
     print('Done')"""
 
     # get function handles of loss and metrics
@@ -62,7 +63,7 @@ def main(config):
                                       warmup_factor=1.0 / 3, warmup_iters=500)
     lr_scheduler = {"mvsnet": mvsnet_lr_sch}
     optimizer = [mvsnet_optimizer]
-    if use_prior:
+    if use_prior_loss:
         priornet_params = filter(lambda p: p.requires_grad, model.pr_net.parameters())
         priornet_optim = optim.Adam(priornet_params, lr=0.00001, amsgrad=True, weight_decay=0.0)
         priornet_lr_sch = optim.lr_scheduler.StepLR(priornet_optim, 5, gamma=0.5)

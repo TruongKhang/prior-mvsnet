@@ -1,26 +1,26 @@
 {
     "name": "SeqProbMVS",
-    "n_gpu": 1,
+    "n_gpu": 2,
     "dataset_name": "dtu",
 
     "arch": {
         "type": "SeqProbMVSNet",
         "args": {
-            "refine": false,
-            "ndepths": [48, 32, 8],
+            "refine": true,
+            "ndepths": [48, 16, 8],
             "depth_interals_ratio": [4.0, 2.0, 1.0],
             "share_cr": false,
             "cr_base_chs": [8, 8, 8],
             "grad_method": "detach",
-            "pretrained_prior": "checkpoint_noscale.pth",
+            "pretrained_prior": "/mnt/sdb/khang/depth-fusion/saved/models/DepthFusion/0202_232039/checkpoint-epoch19.pth",
             "pretrained_mvs": "casmvsnet.ckpt"
         }
     },
     "data_loader": {
         "type": "DTULoader",
         "args":{
-            "data_path": "/dev/dtu_dataset/train",
-            "data_list": "lists/dtu/train.txt",
+            "data_path": "/mnt/sdb/khang/dtu_dataset/train",
+            "data_list": "lists/dtu/subsub.txt",
             "mode": "train",
             "num_srcs": 3,
             "num_depths": 192,
@@ -60,6 +60,7 @@
         "tensorboard": false,
         "depth_scale": 1.0,
         "use_prior": true,
+        "use_prior_loss": false,
         "lrepochs": "5,10,15:2",
         "dlossw": [0.5, 1.0, 2.0],
         "eval_freq": 1

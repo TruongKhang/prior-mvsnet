@@ -3,6 +3,8 @@ import os
 import torch
 import torch.nn.functional as F
 import time
+from PIL import Image
+import matplotlib.pyplot as plt
 
 from base import BaseTrainer
 from utils import AbsDepthError_metrics, Thres_metrics, tocuda, DictAverageMeter, inf_loop, tensor2float, tensor2numpy, save_images
@@ -89,7 +91,7 @@ class Trainer(BaseTrainer):
                                  depth_scale=self.depth_scale)
 
             loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms, dlossw=self.config["trainer"]["dlossw"],
-                                              use_prior=self.use_prior)
+                                              use_prior_loss=self.config["trainer"]["use_prior_loss"])
             loss.backward()
             for otm in self.optimizer:
                 otm.step()
@@ -139,7 +141,7 @@ class Trainer(BaseTrainer):
 
         return self.train_metrics.mean()
 
-    def _valid_epoch(self, epoch, save_folder=None):
+    def _valid_epoch(self, epoch, save_folder='saved/samples'):
         """
         Validate after training an epoch
         :param epoch: Integer, current training epoch.
@@ -147,13 +149,6 @@ class Trainer(BaseTrainer):
         """
         print("Validation at epoch %d, size of validation set: %d, batch_size: %d" % (epoch, len(self.valid_data_loader),
                                                                                      self.valid_data_loader.batch_size))
-        if save_folder is not None:
-            path_depth = os.path.join(save_folder, 'depth_maps')
-            if not os.path.exists(path_depth):
-                os.makedirs(path_depth)
-            path_cfd = os.path.join(save_folder, 'confidence')
-            if not os.path.exists(path_cfd):
-                os.makedirs(path_cfd)
 
         self.model.eval()
         prior_state = PriorState(max_size=4)
@@ -196,7 +191,7 @@ class Trainer(BaseTrainer):
 
                 loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms,
                                                   dlossw=self.config["trainer"]["dlossw"],
-                                                  use_prior=self.use_prior)
+                                                  use_prior_loss=self.config["trainer"]["use_prior_loss"])
 
                 if self.config["dataset_name"] != 'dtu':
                     final_depth = outputs["depth"].detach()
@@ -211,10 +206,14 @@ class Trainer(BaseTrainer):
                     prior_state.update(depth_est, conf_est)
 
                 depth_est = outputs["depth"].detach()
+                #prior_depth_est = outputs["prior_depth"].detach().squeeze(1)
+                #mvs_depth_est = outputs["mvs_depth"].detach()
 
                 scalar_outputs = {"loss": loss,
                                   "depth_loss": depth_loss,
                                   "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+                                  #"abs_mvs_depth_error": AbsDepthError_metrics(mvs_depth_est, depth_gt, mask > 0.5),
+                                  #"abs_prior_depth_error": AbsDepthError_metrics(prior_depth_est, depth_gt, mask > 0.5),
                                   "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
                                   "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
                                   "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),
@@ -234,15 +233,78 @@ class Trainer(BaseTrainer):
                                                                                [20.0, 1e5]),
                                   }
 
-                """prior_depth_est = outputs["prior_depth"].squeeze(1)
-                image_outputs = {"depth_est": depth_est * mask,
-                                 "depth_est_nomask": depth_est,
-                                 "depth_gt": sample_cuda["depth"]["stage1"].cpu(),
+                """depth_est[depth_est > 1500] = 1500
+                depth_est[depth_est < 400] = 400
+                depth_est[0, 0] = 400
+                prior_depth_est[prior_depth_est > 1500] = 1500
+                prior_depth_est[prior_depth_est < 400] = 400
+                prior_depth_est[0, 0] = 400
+                mvs_depth_est[mvs_depth_est > 1500] = 1500
+                mvs_depth_est[mvs_depth_est < 400] = 400
+                mvs_depth_est[0, 0] = 400"""
+
+                """error_map = (depth_est - depth_gt).abs()
+                error_map[error_map > 20] = 20
+                error_map[0, 0, 0] = 0
+                error_mvs_depth = (mvs_depth_est - depth_gt).abs()
+                error_mvs_depth[error_mvs_depth > 20] = 20
+                error_mvs_depth[0, 0, 0] = 0
+                error_prior_depth = (prior_depth_est - depth_gt).abs()
+                error_prior_depth[error_prior_depth > 20] = 20
+                error_prior_depth[0, 0, 0] = 0"""
+
+                """prior_conf = outputs["prior_conf"].detach().squeeze(1)
+                prior_conf = (prior_conf - torch.min(prior_conf)) / torch.max(prior_conf) * 255
+
+                mvs_conf = outputs["mvs_conf"].detach() * 255
+                mvs_conf[0, 0, 0] = 0
+                final_conf = outputs["photometric_confidence"].detach() * 255
+                final_conf[0, 0, 0] = 0
+
+                image_outputs = {"final_conf": final_conf,
+                                 "mvs_conf": mvs_conf,
+                                 "prior_conf": prior_conf,
+                                 "ref_img": sample_cuda["imgs"][:, 0].permute(0, 2, 3, 1).cpu() * 255,
+                                 "mask": (sample_cuda["mask"]["stage3"].cpu() > 0.5).float() * 255,
+                                 "final_depth": depth_est,
+                                 "prior_depth": prior_depth_est,
+                                 "mvs_depth": mvs_depth_est}
+
+                image_outputs = tensor2numpy(image_outputs)
+                for k, v in image_outputs.items():
+                    v = np.squeeze(v, axis=0)
+                    img = Image.fromarray(v.astype(np.uint8))
+                    if 'depth' in k:
+                        img = Image.fromarray(v.astype(np.uint16))
+                        dir = '%s/depth' %save_folder
+                    elif 'conf' in k:
+                        dir = '%s/conf' %save_folder
+                    elif 'img' in k:
+                        dir = '%s/ref_img' %save_folder
+                    else:
+                        dir = '%s/mask' %save_folder
+                    if not os.path.exists(dir):
+                        os.makedirs(dir)
+                    if 'depth' in k:
+                        plt.imsave('%s/%s_%d.png' % (dir, k, batch_idx), v, vmin=400, vmax=1500)
+                        img.save('%s/%s_%d.png' % (dir, k, batch_idx))
+                        gt_dir = '%s/groundtruth_depth' % save_folder
+                        if not os.path.exists(gt_dir):
+                            os.makedirs(gt_dir)
+                        gt_depth = (depth_gt*10).squeeze(0).cpu().numpy()
+                        gt_depth = Image.fromarray(gt_depth.astype(np.uint16))
+                        gt_depth.save('%s/%s_%d.png' % (gt_dir, k, batch_idx))"""
+
+                """image_outputs = {"final_depth_masked": depth_est * mask,
+                                 "final_depth": depth_est,
+                                 "gt_depth": sample_cuda["depth"]["stage1"].cpu(),
                                  "ref_img": sample_cuda["imgs"][:, 0].cpu(),
                                  "mask": sample_cuda["mask"]["stage1"].cpu(),
-                                 "errormap": (depth_est - depth_gt).abs() * mask,
-                                 "prior_depth": prior_depth_est * mask,
-                                 "error_prior_depth": (prior_depth_est - depth_gt).abs() * mask}
+                                 "errormap": error_map,
+                                 "prior_depth": prior_depth_est,
+                                 "error_prior_depth": error_prior_depth,
+                                 "mvs_depth": mvs_depth_est,
+                                 "error_mvs_depth": error_mvs_depth}
                 save_images(self.writer, 'val', tensor2numpy(image_outputs), batch_idx)"""
 
                 if batch_idx % self.log_step == 0:

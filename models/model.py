@@ -101,18 +101,21 @@ class SeqProbMVSNet(nn.Module):
                                                                  base_channels=self.cr_base_chs[i])
                                                       for i in range(self.num_stage)])
         if self.refine:
+            print("Perform depth refinement network")
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 65)
 
         self.dnet = DepthNet()
         if use_prior:
             self.pr_net = PriorNet()
             if pretrained_prior is not None:
+                print("Load pretrained prior net")
                 ckpt = torch.load(pretrained_prior)
                 self.pr_net.load_state_dict(ckpt['state_dict'])
                 for p in self.pr_net.parameters():
                     p.requires_grad = False
 
         if pretrained_mvs is not None:
+            print("Load pretrained CasMVSNet")
             ckpt = torch.load(pretrained_mvs)
             feat_dict, cost_reg_dict = {}, {}
             for k, v in ckpt['model'].items():
@@ -200,6 +203,7 @@ class SeqProbMVSNet(nn.Module):
 
             if self.refine:
                 init_depth = depth_regression(log_likelihood, depth_values_stage)
+                init_depth = init_depth.unsqueeze(1)
                 if prior is not None:
                     input_p = (est_prior_depth, est_prior_conf)
                     depth, final_conf = self.refine_network(init_depth, stage_idx, input_p,
