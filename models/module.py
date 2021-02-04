@@ -406,10 +406,11 @@ class RefineNet(nn.Module):
         inputs = torch.cat((prior_conf, prior_depth, init_depth), dim=1)
         latent_feat = self.feature_extractor(inputs)
 
-        final_depth = self.depth_prediction(latent_feat)
+        var = self.depth_prediction(latent_feat)
+        final_depth = init_depth + var
         final_conf = None
         if stage_idx == 2:
-            input_feat = torch.cat((feat_img, latent_feat), dim=1).detach()
+            input_feat = torch.cat((feat_img, latent_feat, var), dim=1).detach()
             final_conf = self.conf_prediction(input_feat)
             final_conf = final_conf.squeeze(1)
         return final_depth.squeeze(1), final_conf

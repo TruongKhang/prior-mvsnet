@@ -102,7 +102,7 @@ class SeqProbMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             print("Perform depth refinement network")
-            self.refine_network = RefineNet(self.feature.out_channels[-1] + 32)
+            self.refine_network = RefineNet(self.feature.out_channels[-1] + 33)
 
         self.dnet = DepthNet()
         if use_prior:
