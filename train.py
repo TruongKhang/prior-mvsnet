@@ -57,6 +57,8 @@ def main(config):
     # build optimizer, learning rate scheduler. delete every lines containing lr_scheduler for disabling scheduler
     mvsnet_params = filter(lambda p: p.requires_grad, model.mvsnet_parameters)
     mvsnet_optimizer = config.init_obj('optimizer', torch.optim, mvsnet_params)
+    mvsnet_optimizer.add_params_group({'params': filter(lambda p: p.requires_grad, model.refine_network.parameters()),
+                                       'lr': 0.001})
     milestones = [len(data_loader) * int(epoch_idx) for epoch_idx in config["trainer"]["lrepochs"].split(':')[0].split(',')]
     lr_gamma = 1 / float(config["trainer"]["lrepochs"].split(':')[1])
     mvsnet_lr_sch = WarmupMultiStepLR(mvsnet_optimizer, milestones, gamma=lr_gamma,
