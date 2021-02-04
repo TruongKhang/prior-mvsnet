@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .prior_net import ResidualBlock
+from .prior_net import ResidualBlock, UNetSP
 import time
 import sys
 sys.path.append("..")
@@ -388,27 +388,24 @@ class CostRegNet(nn.Module):
 
 
 class RefineNet(nn.Module):
-    def __init__(self, vol_channels):
+    def __init__(self, in_conf_c):
         super(RefineNet, self).__init__()
         self.feature_extractor = nn.Sequential(Conv2d(2, 64, 3, bn=False))
         self.depth_prediction = nn.Sequential(Conv2d(64, 32, 3, bn=False),
                                               ResidualBlock(32, bn=False),
                                               ResidualBlock(32, bn=False),
                                               nn.Conv2d(32, 1, 1))
-        self.conf_prediction = nn.Sequential(Conv2d(65, 32, 3, bn=True),
-                                             ResidualBlock(32, bn=False),
-                                             ResidualBlock(32, bn=False),
-                                             nn.Conv2d(32, 1, 1))
+        self.conf_prediction = UNetSP(in_conf_c, 1)
 
-    def forward(self, cur_est, stage_idx,  prior=None):
-        est_depth, est_conf = cur_est
-        if prior is not None:
-            prior_depth, prior_conf = prior
-        else:
-            prior_depth, prior_conf = cur_est
-        latent_feat = self.feature_extractor(torch.cat((prior_depth, est_depth), dim=1))
+    def forward(self, init_depth, stage_idx, prior, feat_img=None):
+        prior_depth, prior_conf = prior
+        in_depths = torch.cat((prior_depth, init_depth), dim=1)
+        latent_feat = self.feature_extractor(in_depths)
+
         final_depth = self.depth_prediction(latent_feat)
-        final_conf = self.conf_prediction(torch.cat((prior_conf, latent_feat), dim=1))
+        final_conf = None
+        if stage_idx == 3:
+            final_conf = self.conf_prediction(torch.cat((prior_conf, feat_img, latent_feat), dim=1))
         return final_depth, final_conf
 
 
