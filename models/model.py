@@ -102,7 +102,7 @@ class SeqProbMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             print("Perform depth refinement network")
-            self.refine_network = RefineNet(self.feature.out_channels[-1] + 64)
+            self.refine_network = RefineNet(self.feature.out_channels[-1] + 32)
 
         self.dnet = DepthNet()
         if use_prior:
@@ -127,8 +127,8 @@ class SeqProbMVSNet(nn.Module):
             self.cost_regularization.load_state_dict(cost_reg_dict)
 
         self.mvsnet_parameters = list(self.feature.parameters()) + list(self.cost_regularization.parameters())
-        # if self.refine:
-        #     self.mvsnet_parameters += list(self.refine_network.parameters())
+        if self.refine:
+            self.mvsnet_parameters += list(self.refine_network.parameters())
 
     def get_log_prior(self, depth, conf, depth_values):
         min_depth, max_depth = depth_values[:, [0], ...], depth_values[:, [-1], ...]

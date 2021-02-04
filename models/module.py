@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .prior_net import ResidualBlock, UNetSP
+from .prior_net import ResidualBlock, UNetSP, UNet
 import time
 import sys
 sys.path.append("..")
@@ -390,10 +390,8 @@ class CostRegNet(nn.Module):
 class RefineNet(nn.Module):
     def __init__(self, in_conf_c):
         super(RefineNet, self).__init__()
-        self.feature_extractor = Conv2d(3, 64, 3, bn=False, padding=1)
-        self.depth_prediction = nn.Sequential(Conv2d(64, 32, 3, bn=False, padding=1),
-                                              ResidualBlock(32, bn=False),
-                                              ResidualBlock(32, bn=False),
+        self.feature_extractor = Conv2d(3, 32, 3, bn=False, padding=1)
+        self.depth_prediction = nn.Sequential(UNet(32, 32, 32, 3, batchnorms=False),
                                               nn.Conv2d(32, 1, 1))
         self.conf_prediction = UNetSP(in_conf_c, 1)
 
