@@ -390,10 +390,16 @@ class CostRegNet(nn.Module):
 class RefineNet(nn.Module):
     def __init__(self, in_conf_c):
         super(RefineNet, self).__init__()
-        self.feature_extractor = Conv2d(3, 32, 3, bn=False, padding=1)
-        self.depth_prediction = nn.Sequential(UNet(32, 32, 32, 3, batchnorms=False),
+        self.feature_extractor = UNet(3, 32, 32, 3, batchnorms=False)
+        self.depth_prediction = nn.Sequential(ResidualBlock(32),
+                                              ResidualBlock(32),
+                                              ResidualBlock(32),
                                               nn.Conv2d(32, 1, 1))
-        self.conf_prediction = UNetSP(in_conf_c, 1)
+        self.conf_prediction = nn.Sequential(Conv2d(in_conf_c, 32, 3, bn=False),
+                                             ResidualBlock(32),
+                                             ResidualBlock(32),
+                                             ResidualBlock(32),
+                                             nn.Conv2d(32, 1, 1))
 
     def forward(self, init_depth, stage_idx, prior, feat_img=None):
         prior_depth, prior_conf = prior
