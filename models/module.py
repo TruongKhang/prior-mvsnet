@@ -390,7 +390,7 @@ class CostRegNet(nn.Module):
 class RefineNet(nn.Module):
     def __init__(self, in_conf_c):
         super(RefineNet, self).__init__()
-        self.feature_extractor = nn.Sequential(Conv2d(2, 64, 3, bn=False, padding=1))
+        self.feature_extractor = Conv2d(3, 64, 3, bn=False, padding=1)
         self.depth_prediction = nn.Sequential(Conv2d(64, 32, 3, bn=False, padding=1),
                                               ResidualBlock(32, bn=False),
                                               ResidualBlock(32, bn=False),
@@ -399,13 +399,14 @@ class RefineNet(nn.Module):
 
     def forward(self, init_depth, stage_idx, prior, feat_img=None):
         prior_depth, prior_conf = prior
-        in_depths = torch.cat((prior_depth, init_depth), dim=1)
-        latent_feat = self.feature_extractor(in_depths)
+        inputs = torch.cat((prior_conf, prior_depth, init_depth), dim=1)
+        latent_feat = self.feature_extractor(inputs)
 
         final_depth = self.depth_prediction(latent_feat)
         final_conf = None
         if stage_idx == 2:
-            final_conf = self.conf_prediction(torch.cat((prior_conf, feat_img, latent_feat), dim=1))
+            input_feat = torch.cat((feat_img, latent_feat), dim=1).detach()
+            final_conf = self.conf_prediction(input_feat)
             final_conf = final_conf.squeeze(1)
         return final_depth.squeeze(1), final_conf
 

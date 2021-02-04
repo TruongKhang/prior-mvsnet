@@ -102,7 +102,7 @@ class SeqProbMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             print("Perform depth refinement network")
-            self.refine_network = RefineNet(self.feature.out_channels[-1] + 65)
+            self.refine_network = RefineNet(self.feature.out_channels[-1] + 64)
 
         self.dnet = DepthNet()
         if use_prior:
@@ -195,26 +195,29 @@ class SeqProbMVSNet(nn.Module):
                                        num_depth=self.ndepths[stage_idx],
                                        cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx], log=log)
 
+            outputs_stage = {}
             if prior is not None:
                 prior_depths, prior_confs = prior[stage_name]
                 est_prior_depth, est_prior_conf = self.pr_net(prior_depths, prior_confs)
+                outputs_stage.update({"prior_depth": est_prior_depth, "prior_conf": est_prior_conf})
             else:
                 est_prior_depth, est_prior_conf = None, None
 
             if self.refine:
-                init_depth = depth_regression(log_likelihood, depth_values_stage)
-                init_depth = init_depth.unsqueeze(1)
+                mvs_depth = depth_regression(log_likelihood, depth_values_stage)
+                outputs_stage["mvs_depth"] = mvs_depth
+                mvs_depth = mvs_depth.unsqueeze(1)
                 if prior is not None:
                     input_p = (est_prior_depth, est_prior_conf)
-                    depth, final_conf = self.refine_network(init_depth, stage_idx, input_p,
-                                                            feat_img=features_stage[0].detach())
+                    depth, final_conf = self.refine_network(mvs_depth.detach(), stage_idx, input_p,
+                                                            feat_img=features_stage[0])
                 else:
                     if stage_idx == 0:
-                        depth, final_conf = init_depth, None
+                        depth, final_conf = mvs_depth, None
                     else:
-                        depth, final_conf = self.refine_network(init_depth, stage_idx,
-                                                                (init_depth, conf_regression(log_likelihood, n=2)),
-                                                                feat_img=features_stage[0].detach())
+                        depth, final_conf = self.refine_network(mvs_depth.detach(), stage_idx,
+                                                                (mvs_depth.detach(), conf_regression(log_likelihood, n=2)),
+                                                                feat_img=features_stage[0])
             else:
                 log_prior = self.get_log_prior(est_prior_depth, est_prior_conf, depth_values_stage / depth_scale) if prior is not None else 0.0
                 log_posterior = log_likelihood + log_prior
@@ -225,11 +228,7 @@ class SeqProbMVSNet(nn.Module):
                 # mvs_depth = depth_regression(likelihood, depth_values_stage)
                 # mvs_conf = conf_regression(likelihood)
 
-            if prior is not None:
-                outputs_stage = {"depth": depth, "photometric_confidence": final_conf,
-                                 "prior_depth": est_prior_depth, "prior_conf": est_prior_conf} #, "mvs_depth": mvs_depth, "mvs_conf": mvs_conf}
-            else:
-                outputs_stage = {"depth": depth, "photometric_confidence": final_conf}
+            outputs_stage.update({"depth": depth, "photometric_confidence": final_conf})
             outputs[stage_name] = outputs_stage
             outputs.update(outputs_stage)
             # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
