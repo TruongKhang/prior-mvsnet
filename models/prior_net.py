@@ -120,7 +120,7 @@ class ResidualBlock(nn.Module):
         layers = [nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)]
         if bn:
             layers.append(nn.BatchNorm2d(channels, affine=True))
-        layers.append(nn.LeakyReLU(0.2, inplace=True)) #nn.ReLU())
+        layers.append(nn.ReLU(inplace=True))
         layers.append(nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1))
         if bn:
             layers.append(nn.BatchNorm2d(channels, affine=True))

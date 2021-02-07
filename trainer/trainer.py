@@ -206,14 +206,14 @@ class Trainer(BaseTrainer):
                     prior_state.update(depth_est, conf_est)
 
                 depth_est = outputs["depth"].detach()
-                #prior_depth_est = outputs["prior_depth"].detach().squeeze(1)
-                #mvs_depth_est = outputs["mvs_depth"].detach()
+                prior_depth_est = outputs["prior_depth"].detach().squeeze(1)
+                mvs_depth_est = outputs["mvs_depth"].detach()
 
                 scalar_outputs = {"loss": loss,
                                   "depth_loss": depth_loss,
                                   "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
-                                  #"abs_mvs_depth_error": AbsDepthError_metrics(mvs_depth_est, depth_gt, mask > 0.5),
-                                  #"abs_prior_depth_error": AbsDepthError_metrics(prior_depth_est, depth_gt, mask > 0.5),
+                                  "abs_mvs_depth_error": AbsDepthError_metrics(mvs_depth_est, depth_gt, mask > 0.5),
+                                  "abs_prior_depth_error": AbsDepthError_metrics(prior_depth_est, depth_gt, mask > 0.5),
                                   "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
                                   "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
                                   "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),

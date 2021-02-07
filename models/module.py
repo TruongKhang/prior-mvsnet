@@ -388,29 +388,33 @@ class CostRegNet(nn.Module):
 
 
 class RefineNet(nn.Module):
-    def __init__(self, in_conf_c):
+    def __init__(self, in_c):
         super(RefineNet, self).__init__()
-        self.feature_extractor = UNet(3, 32, 32, 3, batchnorms=False)
+        self.feature_extractor = nn.Sequential(Conv2d(in_c, 64, 3, bn=False, padding=1), #UNet(3, 32, 32, 3, batchnorms=False)
+                                               Conv2d(64, 32, 3, bn=False, padding=1),
+                                               Conv2d(32, 32, 3, bn=False, padding=1),
+                                               #Conv2d(32, 32, 3, bn=False, padding=1),
+                                               Conv2d(32, 32, 3, bn=False, padding=1))
         self.depth_prediction = nn.Sequential(Conv2d(32, 32, 3, bn=False, padding=1),
                                               Conv2d(32, 32, 3, bn=False, padding=1),
-                                              #ResidualBlock(32),
+                                              #Conv2d(32, 32, 3, bn=False, padding=1),
                                               nn.Conv2d(32, 1, 1))
-        self.conf_prediction = nn.Sequential(Conv2d(in_conf_c, 32, 3, bn=False, padding=1),
-                                             Conv2d(32, 32, 3, bn=False, padding=1),
-                                             Conv2d(32, 32, 3, bn=False, padding=1),
+        self.conf_prediction = nn.Sequential(Conv2d(33, 64, 3, bn=False, padding=1),
+                                             Conv2d(64, 32, 3, bn=False, padding=1),
+                                             #Conv2d(32, 32, 3, bn=False, padding=1),
                                              nn.Conv2d(32, 1, 1),
                                              nn.Softplus())
 
     def forward(self, init_depth, stage_idx, prior, feat_img=None):
         prior_depth, prior_conf = prior
-        inputs = torch.cat((prior_conf, prior_depth, init_depth), dim=1)
+        inputs = torch.cat((feat_img, prior_depth, init_depth, prior_depth - init_depth, prior_conf), dim=1)
         latent_feat = self.feature_extractor(inputs)
 
-        var = self.depth_prediction(latent_feat)
-        final_depth = init_depth + var
+        depth_residual = self.depth_prediction(latent_feat)
+        final_depth = init_depth + depth_residual
         final_conf = None
         if stage_idx == 2:
-            input_feat = torch.cat((feat_img, latent_feat, var), dim=1).detach()
+            input_feat = torch.cat((latent_feat, depth_residual), dim=1).detach()
             final_conf = self.conf_prediction(input_feat)
             final_conf = final_conf.squeeze(1)
         return final_depth.squeeze(1), final_conf

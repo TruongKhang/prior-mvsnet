@@ -7,7 +7,7 @@
         "type": "SeqProbMVSNet",
         "args": {
             "refine": true,
-            "ndepths": [48, 16, 8],
+            "ndepths": [48, 32, 8],
             "depth_interals_ratio": [4.0, 2.0, 1.0],
             "share_cr": false,
             "cr_base_chs": [8, 8, 8],
@@ -20,7 +20,7 @@
         "type": "DTULoader",
         "args":{
             "data_path": "/mnt/sdb/khang/dtu_dataset/train",
-            "data_list": "lists/dtu/subsub.txt",
+            "data_list": "lists/dtu/train.txt",
             "mode": "train",
             "num_srcs": 3,
             "num_depths": 192,
@@ -33,7 +33,7 @@
     "optimizer": {
         "type": "Adam",
         "args":{
-            "lr": 0.0001,
+            "lr": 0.00005,
             "weight_decay": 0,
             "amsgrad": true
         }
@@ -61,7 +61,7 @@
         "depth_scale": 1.0,
         "use_prior": true,
         "use_prior_loss": false,
-        "lrepochs": "5,10,15:2",
+        "lrepochs": "3,5,7:2",
         "dlossw": [0.5, 1.0, 2.0],
         "eval_freq": 1
     }

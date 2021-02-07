@@ -26,7 +26,7 @@ def main(config):
     # setup data_loader instances
     init_kwags = {
         "data_path": config["data_loader"]["args"]["data_path"],
-        "data_list": "lists/dtu/subset_val.txt",
+        "data_list": "lists/dtu/val.txt",
         "mode": "val",
         "num_srcs": config["data_loader"]["args"]["num_srcs"],
         "num_depths": config["data_loader"]["args"]["num_depths"],
@@ -42,9 +42,9 @@ def main(config):
 
     # build models architecture, then print to console
     model = config.init_obj('arch', module_arch, use_prior=use_prior)
-    logger.info(model)
+    #logger.info(model)
     """print('Load pretrained model')
-    checkpoint = torch.load('saved/0203_050241/checkpoint-epoch1.pth')
+    checkpoint = torch.load('saved/models/SeqProbMVS/0207_003539/checkpoint-epoch2.pth')
     new_state_dict = {}
     for key, val in checkpoint['state_dict'].items():
         new_state_dict[key.replace('module.', '')] = val
@@ -57,8 +57,8 @@ def main(config):
     # build optimizer, learning rate scheduler. delete every lines containing lr_scheduler for disabling scheduler
     mvsnet_params = filter(lambda p: p.requires_grad, model.mvsnet_parameters)
     mvsnet_optimizer = config.init_obj('optimizer', torch.optim, mvsnet_params)
-    # mvsnet_optimizer.add_params_group({'params': filter(lambda p: p.requires_grad, model.refine_network.parameters()),
-    #                                    'lr': 0.001})
+    mvsnet_optimizer.add_param_group({'params': filter(lambda p: p.requires_grad, model.refine_network.parameters()),
+                                       'lr': 0.0001})
     milestones = [len(data_loader) * int(epoch_idx) for epoch_idx in config["trainer"]["lrepochs"].split(':')[0].split(',')]
     lr_gamma = 1 / float(config["trainer"]["lrepochs"].split(':')[1])
     mvsnet_lr_sch = WarmupMultiStepLR(mvsnet_optimizer, milestones, gamma=lr_gamma,
