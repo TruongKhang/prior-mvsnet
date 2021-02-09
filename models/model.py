@@ -100,7 +100,7 @@ class SeqProbMVSNet(nn.Module):
                                                                  base_channels=self.cr_base_chs[i])
                                                       for i in range(self.num_stage)])
         if self.refine:
-            self.refine_network = RefineNet()
+            self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
         self.dnet = DepthNet()
         if use_prior:
@@ -108,6 +108,9 @@ class SeqProbMVSNet(nn.Module):
             if pretrained_prior is not None:
                 ckpt = torch.load(pretrained_prior)
                 self.pr_net.load_state_dict(ckpt['state_dict'])
+                for p in self.pr_net.parameters():
+                    p.requires_grad = False
+
         if pretrained_mvs is not None:
             ckpt = torch.load(pretrained_mvs)
             feat_dict, cost_reg_dict = {}, {}
@@ -123,12 +126,11 @@ class SeqProbMVSNet(nn.Module):
 
     def get_log_prior(self, depth, conf, depth_values):
         min_depth, max_depth = depth_values[:, [0], ...], depth_values[:, [-1], ...]
-        mask = (depth >= min_depth) & (depth <= max_depth)
+        mask = (depth.detach() >= min_depth) & (depth.detach() <= max_depth)
         mask = mask.repeat(1, depth_values.size(1), 1, 1)
         log_dist_masked = torch.zeros_like(depth_values)
         log_dist = - conf * torch.abs(depth - depth_values)
         log_dist_masked[mask] = log_dist[mask]
-        # regl = torch.log(conf/2 + 1e-16)
         return log_dist_masked
 
     def forward(self, imgs, proj_matrices, depth_values, prior=None, depth_scale=1.0):
@@ -149,7 +151,7 @@ class SeqProbMVSNet(nn.Module):
 
         outputs = {}
         depth, cur_depth = None, None
-        # depth_range_values = {}
+
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
@@ -172,9 +174,7 @@ class SeqProbMVSNet(nn.Module):
                                                         depth_inteval_pixel=self.depth_interals_ratio[stage_idx] * depth_interval,
                                                         dtype=imgs[0].dtype,
                                                         device=imgs[0].device,
-                                                        shape=[batch_size, height, width],
-                                                        max_depth=depth_max,
-                                                        min_depth=depth_min)
+                                                        shape=[batch_size, height, width])
 
             # added by Khang
             depth_values_stage = F.interpolate(depth_range_samples.unsqueeze(1),
@@ -197,18 +197,32 @@ class SeqProbMVSNet(nn.Module):
             posterior_vol = F.softmax(log_posterior, dim=1)
             depth = depth_regression(posterior_vol, depth_values_stage)
             final_conf = conf_regression(posterior_vol)
+            var = torch.abs(depth.unsqueeze(1).detach() - depth_values_stage)
+            var = depth_regression(posterior_vol, var)
 
-            outputs_stage = {"depth": depth, "photometric_confidence": final_conf,
+            outputs_stage = {"depth": depth, "photometric_confidence": final_conf, "var": var,
                              "prior_depth": est_prior_depth, "prior_conf": est_prior_conf}
             outputs[stage_name] = outputs_stage
             outputs.update(outputs_stage)
             # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
 
+        all_depth_samples = get_depth_range_samples(depth_values, depth_values.size(1), depth_interval,
+                                                    device=imgs[0].device, dtype=imgs[0].dtype,
+                                                    shape=[batch_size, height, width]) # [B,D,H,W]
+        total_dist = 0.0
+        for stage_idx in range(self.num_stage):
+            stage_name = "stage{}".format(stage_idx + 1)
+            depth_stage, var_stage = outputs[stage_name]["depth"].detach(), outputs[stage_name]["var"].detach()
+            dist = torch.exp(- (depth_stage.unsqueeze(1) - all_depth_samples) / (var_stage.unsqueeze(1) + 1e-16))
+            total_dist = total_dist + dist
+        total_dist /= self.num_stage
+        final_depth, indices = torch.max(total_dist, dim=1, keepdim=True)
+        final_conf = torch.gather(total_dist, dim=1, index=indices)
+        feat_img = features[0]["stage3"].detach()
         # depth map refinement
         if self.refine:
-            refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
-            outputs["refined_depth"] = refined_depth
-        # outputs["depth_candidates"] = depth_range_values
-        # outputs["total_loss_vol"] = total_loss
+            refined_depth, refined_conf = self.refine_network(final_depth, final_conf, feat_img)
+            outputs["final_depth"] = refined_depth
+            outputs["final_conf"] = refined_conf
 
         return outputs

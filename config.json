@@ -6,12 +6,14 @@
     "arch": {
         "type": "SeqProbMVSNet",
         "args": {
-            "refine": false,
+            "refine": true,
             "ndepths": [48, 32, 8],
             "depth_interals_ratio": [4.0, 2.0, 1.0],
             "share_cr": false,
             "cr_base_chs": [8, 8, 8],
-            "grad_method": "detach"
+            "grad_method": "detach",
+            "pretrained_prior": "/mnt/sdb/khang/depth-fusion/saved/models/DepthFusion/0202_232039/checkpoint-epoch19.pth",
+            "pretrained_mvs": "casmvsnet.ckpt"
         }
     },
     "data_loader": {
@@ -31,7 +33,7 @@
     "optimizer": {
         "type": "Adam",
         "args":{
-            "lr": 0.00001,
+            "lr": 0.00005,
             "weight_decay": 0,
             "amsgrad": true
         }
@@ -58,6 +60,7 @@
         "tensorboard": false,
         "depth_scale": 1.0,
         "use_prior": true,
+        "use_prior_loss": false,
         "lrepochs": "5,10,15:2",
         "dlossw": [0.5, 1.0, 2.0],
         "eval_freq": 1

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
     depth_loss_weights = kwargs.get("dlossw", None)
-    use_prior = kwargs.get("use_prior", False)
+    use_prior = kwargs.get("use_prior_loss", False)
     depth_scale = kwargs.get("depth_scale", 1.0)
 
     total_loss = torch.tensor(0.0, dtype=torch.float32, device=mask_ms["stage1"].device, requires_grad=False)
@@ -21,7 +21,7 @@ def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
         if use_prior:
             scaled_depth_gt = depth_gt.unsqueeze(1) / depth_scale
             target = (scaled_depth_gt, mask.unsqueeze(1))
-            prior_loss = masked_prior_loss(stage_inputs["prior_depth"], stage_inputs["prior_conf"], target)
+            prior_loss, _ = masked_prob_loss(stage_inputs["prior_depth"], stage_inputs["prior_conf"], target)
         else:
             prior_loss = 0.0
 
@@ -31,10 +31,13 @@ def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
         else:
             total_loss += 1.0 * (depth_loss + prior_loss)
 
+    final_loss, depth_loss = masked_prob_loss(inputs["final_depth"], inputs["final_conf"],
+                                              (depth_gt_ms["stage3"], mask_ms["stage3"] > 0.5))
+
     return total_loss, depth_loss
 
 
-def masked_prior_loss(depth, var, target):
+def masked_prob_loss(depth, var, target):
     gt_depths, valid_mask = target
     # valid_mask = valid_mask.float()
     # cnt = gt_depths.size(0) * gt_depths.size(2) * gt_depths.size(3)
@@ -44,5 +47,6 @@ def masked_prior_loss(depth, var, target):
     mean = depth[valid_mask]
     res = var[valid_mask]
     regl = regl[valid_mask]
-    final_loss = torch.mean(res * torch.abs(gt - mean) - regl) #torch.pow(gt - mean, 2) - regl)
-    return final_loss
+    depth_error = torch.abs(gt - mean)
+    final_loss = torch.mean(res * depth_error - regl) #torch.pow(gt - mean, 2) - regl)
+    return final_loss, depth_error.mean()
