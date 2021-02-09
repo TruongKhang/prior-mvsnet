@@ -233,7 +233,7 @@ class MVSDataset(Dataset):
 
             proj_matrices.append(proj_mat)
 
-            if i == 0:  # reference view
+            if i == 0: # reference view
                 mask_read_ms = self.read_mask_hr(mask_filename_hr)
                 depth_ms = self.read_depth_hr(depth_filename_hr)
 
@@ -246,7 +246,6 @@ class MVSDataset(Dataset):
             imgs.append(img)
 
             mask_vid = self.read_mask_hr(mask_filename_hr)
-
             stage = "stage3"
             in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>3}_{}.png'.format(stage, scan, vid, light_idx))
             in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10 * (mask_vid[stage] > 0.5).astype(np.float32)

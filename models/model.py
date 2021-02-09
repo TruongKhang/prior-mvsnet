@@ -65,8 +65,7 @@ class DepthNet(nn.Module):
 
 class SeqProbMVSNet(nn.Module):
     def __init__(self, refine=False, ndepths=(48, 32, 8), depth_interals_ratio=(4, 2, 1), share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), pretrained_prior=None,
-                 pretrained_mvs=None, use_prior=True):
+                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), pretrained_prior=None, pretrained_mvs=None, use_prior=True):
         super(SeqProbMVSNet, self).__init__()
         self.refine = refine
         self.share_cr = share_cr
@@ -101,21 +100,15 @@ class SeqProbMVSNet(nn.Module):
                                                                  base_channels=self.cr_base_chs[i])
                                                       for i in range(self.num_stage)])
         if self.refine:
-            print("Perform depth refinement network")
-            self.refine_network = RefineNet(self.feature.out_channels[-1] + 4)
+            self.refine_network = RefineNet()
 
         self.dnet = DepthNet()
         if use_prior:
             self.pr_net = PriorNet()
             if pretrained_prior is not None:
-                print("Load pretrained prior net")
                 ckpt = torch.load(pretrained_prior)
                 self.pr_net.load_state_dict(ckpt['state_dict'])
-                for p in self.pr_net.parameters():
-                    p.requires_grad = False
-
         if pretrained_mvs is not None:
-            print("Load pretrained CasMVSNet")
             ckpt = torch.load(pretrained_mvs)
             feat_dict, cost_reg_dict = {}, {}
             for k, v in ckpt['model'].items():
@@ -127,8 +120,6 @@ class SeqProbMVSNet(nn.Module):
             self.cost_regularization.load_state_dict(cost_reg_dict)
 
         self.mvsnet_parameters = list(self.feature.parameters()) + list(self.cost_regularization.parameters())
-        #if self.refine:
-        #    self.mvsnet_parameters += list(self.refine_network.parameters())
 
     def get_log_prior(self, depth, conf, depth_values):
         min_depth, max_depth = depth_values[:, [0], ...], depth_values[:, [-1], ...]
@@ -137,6 +128,7 @@ class SeqProbMVSNet(nn.Module):
         log_dist_masked = torch.zeros_like(depth_values)
         log_dist = - conf * torch.abs(depth - depth_values)
         log_dist_masked[mask] = log_dist[mask]
+        # regl = torch.log(conf/2 + 1e-16)
         return log_dist_masked
 
     def forward(self, imgs, proj_matrices, depth_values, prior=None, depth_scale=1.0):
@@ -157,7 +149,7 @@ class SeqProbMVSNet(nn.Module):
 
         outputs = {}
         depth, cur_depth = None, None
-        feat_img = features[0]["stage3"].detach()
+        # depth_range_values = {}
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
@@ -189,57 +181,33 @@ class SeqProbMVSNet(nn.Module):
                                                [self.ndepths[stage_idx], height//int(stage_scale), width//int(stage_scale)],
                                                mode='trilinear', align_corners=Align_Corners_Range).squeeze(1)
 
-            log = False if self.refine else True
-
             log_likelihood = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
-                                       cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx], log=log)
+                                       cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx], log=True)
 
-            outputs_stage = {}
             if prior is not None:
                 prior_depths, prior_confs = prior[stage_name]
                 est_prior_depth, est_prior_conf = self.pr_net(prior_depths, prior_confs)
-                outputs_stage.update({"prior_depth": est_prior_depth, "prior_conf": est_prior_conf})
+                log_prior = self.get_log_prior(est_prior_depth, est_prior_conf, depth_values_stage / depth_scale)
             else:
+                log_prior = 0.0
                 est_prior_depth, est_prior_conf = None, None
 
-            if self.refine:
-                mvs_depth = depth_regression(log_likelihood, depth_values_stage)
-                outputs_stage["mvs_depth"] = mvs_depth
-                mvs_depth = mvs_depth.unsqueeze(1)
-                feat_img_stage = F.interpolate(feat_img, [height//int(stage_scale), width//int(stage_scale)], mode='nearest')
-                if prior is not None:
-                    input_p = (est_prior_depth, est_prior_conf)
-                    depth, final_conf = self.refine_network(mvs_depth.detach(), stage_idx, input_p,
-                                                            feat_img=feat_img_stage)
-                else:
-                    if stage_idx == 0:
-                        depth, final_conf = mvs_depth, None
-                    else:
-                        depth, final_conf = self.refine_network(mvs_depth.detach(), stage_idx,
-                                                                (mvs_depth.detach(), conf_regression(log_likelihood, n=2)),
-                                                                feat_img=feat_img_stage)
-            else:
-                log_prior = self.get_log_prior(est_prior_depth, est_prior_conf, depth_values_stage / depth_scale) if prior is not None else 0.0
-                log_posterior = log_likelihood + log_prior
-                posterior_vol = F.softmax(log_posterior, dim=1)
-                depth = depth_regression(posterior_vol, depth_values_stage)
-                final_conf = conf_regression(posterior_vol)
-                # likelihood = F.softmax(log_likelihood, dim=1)
-                # mvs_depth = depth_regression(likelihood, depth_values_stage)
-                # mvs_conf = conf_regression(likelihood)
+            log_posterior = log_likelihood + log_prior
+            posterior_vol = F.softmax(log_posterior, dim=1)
+            depth = depth_regression(posterior_vol, depth_values_stage)
+            final_conf = conf_regression(posterior_vol)
 
-            outputs_stage["depth"] = depth
-            if final_conf is not None:
-                outputs_stage["photometric_confidence"] = final_conf
+            outputs_stage = {"depth": depth, "photometric_confidence": final_conf,
+                             "prior_depth": est_prior_depth, "prior_conf": est_prior_conf}
             outputs[stage_name] = outputs_stage
             outputs.update(outputs_stage)
             # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
 
         # depth map refinement
-        # if self.refine:
-        #     refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
-        #     outputs["refined_depth"] = refined_depth
+        if self.refine:
+            refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
+            outputs["refined_depth"] = refined_depth
         # outputs["depth_candidates"] = depth_range_values
         # outputs["total_loss_vol"] = total_loss
 
