@@ -206,13 +206,17 @@ class SeqProbMVSNet(nn.Module):
             outputs.update(outputs_stage)
             # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
 
-        all_depth_samples = get_depth_range_samples(depth_values, depth_values.size(1), depth_interval,
-                                                    device=imgs[0].device, dtype=imgs[0].dtype,
-                                                    shape=[batch_size, height, width]) # [B,D,H,W]
+        # all_depth_samples = get_depth_range_samples(depth_values, depth_values.size(1), depth_interval,
+        #                                             device=imgs[0].device, dtype=imgs[0].dtype,
+        #                                             shape=[batch_size, height, width]) # [B,D,H,W]
+        all_depth_samples = depth_values_stage
+        
         total_dist = 0.0
         for stage_idx in range(self.num_stage):
             stage_name = "stage{}".format(stage_idx + 1)
             depth_stage, var_stage = outputs[stage_name]["depth"].detach(), outputs[stage_name]["var"].detach()
+            depth_stage = F.interpolate(depth_stage.unsqueeze(1), [height, width], mode='nearest')
+            var_stage = F.interpolate(var_stage.unsqueeze(1), [height, width], mode='nearest')
             dist = torch.exp(- (depth_stage.unsqueeze(1) - all_depth_samples) / (var_stage.unsqueeze(1) + 1e-16))
             total_dist = total_dist + dist
         total_dist /= self.num_stage
