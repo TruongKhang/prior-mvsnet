@@ -2,10 +2,12 @@ from torch.utils.data import Dataset
 import numpy as np
 import os, cv2, time, math
 from PIL import Image
-from datasets.data_io import *
+from datasets.data_io import read_pfm
+import random
 
 np.random.seed(123)
 random.seed(123)
+
 
 # the DTU dataset preprocessed by Yao Yao (only for training)
 class MVSDataset(Dataset):
@@ -39,16 +41,6 @@ class MVSDataset(Dataset):
             else:
                 self.spliter.append((name, np.arange(num_imgs)))
         print("dataset", self.mode, "metas:", total_imgs)
-        self.trans_norm = {}
-        scale_file = os.path.join(self.datapath, 'scale_dtu.txt')
-        if not os.path.exists(scale_file):
-            self.trans_norm = None
-        else:
-            with open(scale_file) as fp:
-                for line in fp:
-                    line = line.strip().split(':')
-                    scan = line[0]
-                    self.trans_norm[scan] = np.array(line[1].split(','), dtype=np.float32)
 
         self.generate_indices()
 
@@ -174,7 +166,6 @@ class MVSDataset(Dataset):
             idx = batch_size - 1
             batch_ptrs = list(range(batch_size))
             id_ptrs = np.zeros(batch_size, dtype=np.uint8)
-            # batch_crop_coords = [(np.random.choice(range_h), np.random.choice(range_w)) for i in range(self.batch_size)]
             while idx < len(self.spliter):
                 for i in range(len(batch_ptrs)):
                     if id_ptrs[i] == 0:
@@ -183,18 +174,15 @@ class MVSDataset(Dataset):
                         self.list_begin.append(False)
                     name, id_data = self.spliter[batch_ptrs[i]]
                     self.generate_img_index.append((name, id_data[id_ptrs[i]]))
-                    # self.list_crop_coords.append(batch_crop_coords[i])
                     id_ptrs[i] += 1
                     if id_ptrs[i] >= len(id_data):
                         idx += 1
                         batch_ptrs[i] = idx
                         id_ptrs[i] = 0
-                        # batch_crop_coords[i] = (np.random.choice(range_h), np.random.choice(range_w))
                     if idx >= len(self.spliter):
                         if i < len(batch_ptrs) - 1:
                             self.generate_img_index = self.generate_img_index[:-(i + 1)]
                             self.list_begin = self.list_begin[:-(i + 1)]
-                            # self.list_crop_coords = self.list_crop_coords[:-(i + 1)]
                         break
         else:
             for ptr in range(len(self.spliter)):
@@ -222,6 +210,8 @@ class MVSDataset(Dataset):
         mask = None
         depth_values = None
         proj_matrices = []
+        input_depths = {"stage1": [], "stage2": [], "stage3": []}
+        input_confs = {"stage1": [], "stage2": [], "stage3": []}
 
         for i, vid in enumerate(view_ids):
             # NOTE that the id in image file names is from 1 to 49 (not 0~48)
@@ -236,10 +226,6 @@ class MVSDataset(Dataset):
             img = self.read_img(img_filename)
 
             intrinsics, extrinsics, depth_min, depth_interval = self.read_cam_file(proj_mat_filename)
-            depth_scale = self.kwargs['depth_scale']
-            depth_min /= depth_scale
-            depth_interval /= depth_scale
-            extrinsics[:4, [3]] /= depth_scale
 
             proj_mat = np.zeros(shape=(2, 4, 4), dtype=np.float32)  #
             proj_mat[0, :4, :4] = extrinsics
@@ -250,8 +236,7 @@ class MVSDataset(Dataset):
             if i == 0:  # reference view
                 mask_read_ms = self.read_mask_hr(mask_filename_hr)
                 depth_ms = self.read_depth_hr(depth_filename_hr)
-                for stage in depth_ms.keys():
-                    depth_ms[stage] /= depth_scale
+
                 #get depth values
                 depth_max = depth_interval * self.ndepths + depth_min
                 depth_values = np.arange(depth_min, depth_max, depth_interval, dtype=np.float32)
@@ -259,6 +244,22 @@ class MVSDataset(Dataset):
                 mask = mask_read_ms
 
             imgs.append(img)
+
+            mask_vid = self.read_mask_hr(mask_filename_hr)
+
+            stage = "stage3"
+            in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>3}_{}.png'.format(stage, scan, vid, light_idx))
+            in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10 * (mask_vid[stage] > 0.5).astype(np.float32)
+            in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>3}_{}.png'.format(stage, scan, vid, light_idx))
+            in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255 * (mask_vid[stage] > 0.5).astype(np.float32)
+            height, width = in_depth.shape
+            input_depths["stage1"].append(cv2.resize(in_depth, (width//4, height//4), interpolation=cv2.INTER_NEAREST))
+            input_depths["stage2"].append(cv2.resize(in_depth, (width//2, height//2), interpolation=cv2.INTER_NEAREST))
+            input_depths["stage3"].append(in_depth)
+            input_confs["stage1"].append(cv2.resize(in_conf, (width//4, height//4), interpolation=cv2.INTER_NEAREST))
+            input_confs["stage2"].append(cv2.resize(in_conf, (width//2, height//2), interpolation=cv2.INTER_NEAREST))
+            input_confs["stage3"].append(in_conf)
+
         #all
         imgs = np.stack(imgs).transpose([0, 3, 1, 2])
         #ms proj_mats
@@ -273,6 +274,9 @@ class MVSDataset(Dataset):
             "stage2": stage2_pjmats,
             "stage3": stage3_pjmats
         }
+        for stage in input_depths.keys():
+            input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
+            input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
 
         return {"imgs": imgs,
                 "proj_matrices": proj_matrices_ms,
@@ -280,5 +284,5 @@ class MVSDataset(Dataset):
                 "depth_values": depth_values,
                 "mask": mask,
                 "is_begin": self.list_begin[idx],
-                "scene_idx": int(scan.replace("scan", ""))-1,
-                "trans_norm": self.trans_norm[scan] if self.trans_norm is not None else np.zeros(3)}
+                "prior_depths": input_depths,
+                "prior_confs": input_confs}

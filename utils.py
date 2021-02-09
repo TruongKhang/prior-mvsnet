@@ -2,6 +2,10 @@ import numpy as np
 import torchvision.utils as vutils
 import torch, random
 import torch.nn.functional as F
+from itertools import repeat
+from pathlib import Path
+import json
+from collections import OrderedDict
 
 
 # print arguments
@@ -105,8 +109,8 @@ class DictAverageMeter(object):
         self.data = {}
         self.count = 0
 
-    def update(self, new_input):
-        self.count += 1
+    def update(self, new_input, n=1.0):
+        self.count += n
         if len(self.data) == 0:
             for k, v in new_input.items():
                 if not isinstance(v, float):
@@ -200,7 +204,7 @@ def reduce_scalar_outputs(scalar_outputs):
 
     return reduced_scalars
 
-import torch
+
 from bisect import bisect_right
 # FIXME ideally this would be achieved with a CombinedLRScheduler,
 # separating MultiStepLR with WarmupLR
@@ -273,6 +277,7 @@ def local_pcd(depth, intr):
     p3d = p3d.reshape(ny, nx, 3).astype(np.float32)
     return p3d
 
+
 def generate_pointcloud(rgb, depth, ply_file, intr, scale=1.0):
     """
     Generate a colored point cloud in PLY format from a color and a depth image.
@@ -311,66 +316,19 @@ def generate_pointcloud(rgb, depth, ply_file, intr, scale=1.0):
     print("save ply, fx:{}, fy:{}, cx:{}, cy:{}".format(fx, fy, cx, cy))
 
 
-from datasets.dtu_yao import MVSDataset
-from torch.utils.data import DataLoader
-from models.utils.warping import world_from_xy_depth
-import os
-def pixels_to_world_example():
-    train_path = '/home/khangtg/Documents/lab/mvs/dataset/mvs/dtu_dataset/train'
-    train_list = 'lists/dtu/subsub_train.txt'
-    stage = "stage3"
-    save_folder = '/home/khangtg/Documents/lab/mvs/dataset/mvs/dtu_dataset/train/3d_point_cloud'
-
-    dataset = MVSDataset(train_path, train_list, "val", 3, 192, 1.06, shuffle=False, seq_size=49, batch_size=1,
-                         depth_scale=1.0)
-    sampler = torch.utils.data.SequentialSampler(dataset)
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, sampler=sampler, num_workers=4)
-    for idx, sample in enumerate(dataloader):
-        sample = tocuda(sample)
-        depth, proj_matrix = sample["depth"][stage], sample["proj_matrices"][stage]
-        proj_matrix = proj_matrix.unbind(1)
-        ref, src = proj_matrix[0], proj_matrix[1:]
-        intrinsics, extrinsics = ref[:, 1, :3, :3], ref[:, 0, :4, :4]
-
-        batch_size, height, width = depth.size()
-        y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=sample["scene_idx"].device),
-                               torch.arange(0, width, dtype=torch.float32, device=sample["scene_idx"].device)])
-        y, x = y.contiguous().view(-1), x.contiguous().view(-1)
-        uv = torch.stack([x, y], dim=-1)
-        uv = uv.unsqueeze(0).repeat(batch_size, 1, 1)
-        points_xyz = world_from_xy_depth(uv, depth, torch.inverse(extrinsics), intrinsics) - sample["trans_norm"].unsqueeze(1)
-        points_xyz = points_xyz.contiguous().view(batch_size, height, width, 3)
-        points_xyz = points_xyz.cpu().numpy()[0]
-
-        img = sample["imgs"][:, 0].cpu().numpy()
-        img = np.clip(np.transpose(img[0], (1, 2, 0)) * 255, 0, 255).astype(np.uint8)
-        points = []
-        for u in range(height):
-            for v in range(width):
-                color = img[u, v]
-                xyz = points_xyz[u, v]
-                points.append("%f %f %f %d %d %d 0\n" % (xyz[0], xyz[1], xyz[2], color[0], color[1], color[2]))
-        scene_idx = sample["scene_idx"][0].item()
-        folder = '%s/scan%d' % (save_folder, scene_idx+1)
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-        file = open('%s/%d.ply' % (folder, idx), "w")
-        file.write('''ply
-                    format ascii 1.0
-                    element vertex %d
-                    property float x
-                    property float y
-                    property float z
-                    property uchar red
-                    property uchar green
-                    property uchar blue
-                    property uchar alpha
-                    end_header
-                    %s
-                    ''' % (len(points), "".join(points)))
-        file.close()
-        print("save ply, scene:{}, idx:{} ".format(scene_idx+1, idx))
+def inf_loop(data_loader):
+    ''' wrapper function for endless data loader. '''
+    for loader in repeat(data_loader):
+        yield from loader
 
 
-if __name__ == '__main__':
-    pixels_to_world_example()
+def read_json(fname):
+    fname = Path(fname)
+    with fname.open('rt') as handle:
+        return json.load(handle, object_hook=OrderedDict)
+
+
+def write_json(content, fname):
+    fname = Path(fname)
+    with fname.open('wt') as handle:
+        json.dump(content, handle, indent=4, sort_keys=False)

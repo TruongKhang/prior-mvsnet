@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Normal, Independent, kl
+from .prior_net import ResidualBlock, UNetSP, UNet
 import time
 import sys
 sys.path.append("..")
@@ -388,18 +388,36 @@ class CostRegNet(nn.Module):
 
 
 class RefineNet(nn.Module):
-    def __init__(self):
+    def __init__(self, in_c):
         super(RefineNet, self).__init__()
-        self.conv1 = Conv2d(4, 32, 3)
-        self.conv2 = Conv2d(32, 32, 3)
-        self.conv3 = Conv2d(32, 32, 3)
-        self.res = Conv2d(32, 1, 3)
+        self.feature_extractor = nn.Sequential(Conv2d(in_c, 64, 3, bn=False, padding=1), #UNet(3, 32, 32, 3, batchnorms=False)
+                                               Conv2d(64, 32, 3, bn=False, padding=1),
+                                               Conv2d(32, 32, 3, bn=False, padding=1),
+                                               #Conv2d(32, 32, 3, bn=False, padding=1),
+                                               Conv2d(32, 32, 3, bn=False, padding=1))
+        self.depth_prediction = nn.Sequential(Conv2d(32, 32, 3, bn=False, padding=1),
+                                              Conv2d(32, 32, 3, bn=False, padding=1),
+                                              #Conv2d(32, 32, 3, bn=False, padding=1),
+                                              nn.Conv2d(32, 1, 1))
+        self.conf_prediction = nn.Sequential(Conv2d(33, 64, 3, bn=False, padding=1),
+                                             Conv2d(64, 32, 3, bn=False, padding=1),
+                                             #Conv2d(32, 32, 3, bn=False, padding=1),
+                                             nn.Conv2d(32, 1, 1),
+                                             nn.Softplus())
 
-    def forward(self, img, depth_init):
-        concat = F.cat((img, depth_init), dim=1)
-        depth_residual = self.res(self.conv3(self.conv2(self.conv1(concat))))
-        depth_refined = depth_init + depth_residual
-        return depth_refined
+    def forward(self, init_depth, stage_idx, prior, feat_img=None):
+        prior_depth, prior_conf = prior
+        inputs = torch.cat((feat_img, prior_depth, init_depth, prior_depth - init_depth, prior_conf), dim=1)
+        latent_feat = self.feature_extractor(inputs)
+
+        depth_residual = self.depth_prediction(latent_feat)
+        final_depth = init_depth + depth_residual
+        final_conf = None
+        if stage_idx == 2:
+            input_feat = torch.cat((latent_feat, depth_residual), dim=1).detach()
+            final_conf = self.conf_prediction(input_feat)
+            final_conf = final_conf.squeeze(1)
+        return final_depth.squeeze(1), final_conf
 
 
 def depth_regression(p, depth_values):
@@ -411,12 +429,12 @@ def depth_regression(p, depth_values):
     return depth
 
 
-def conf_regression(p):
+def conf_regression(p, n=4):
     ndepths = p.size(1)
     with torch.no_grad():
         # photometric confidence
-        prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(p.unsqueeze(1), pad=[0, 0, 0, 0, 0, 1]),
-                                            (2, 1, 1), stride=1, padding=0).squeeze(1)
+        prob_volume_sum4 = n * F.avg_pool3d(F.pad(p.unsqueeze(1), pad=[0, 0, 0, 0, n//2 - 1, n//2]),
+                                            (n, 1, 1), stride=1, padding=0).squeeze(1)
         depth_index = depth_regression(p.detach(), depth_values=torch.arange(ndepths, device=p.device, dtype=torch.float)).long()
         depth_index = depth_index.clamp(min=0, max=ndepths - 1)
         conf = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1))
@@ -466,81 +484,6 @@ def get_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, device, dtyp
         depth_range_samples = get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, max_depth, min_depth)
 
     return depth_range_samples
-
-
-
-'''A number of custom pytorch modules with sane defaults that I find useful for model prototyping.'''
-
-class FCLayer(nn.Module):
-    def __init__(self, in_features, out_features):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_features, out_features),
-            # nn.LayerNorm([out_features]),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, input):
-        return self.net(input)
-
-
-# From https://gist.github.com/wassname/ecd2dac6fc8f9918149853d17e3abf02
-class LayerNormConv2d(nn.Module):
-
-    def __init__(self, num_features, eps=1e-5, affine=True):
-        super().__init__()
-        self.num_features = num_features
-        self.affine = affine
-        self.eps = eps
-
-        if self.affine:
-            self.gamma = nn.Parameter(torch.Tensor(num_features).uniform_())
-            self.beta = nn.Parameter(torch.zeros(num_features))
-
-    def forward(self, x):
-        shape = [-1] + [1] * (x.dim() - 1)
-        mean = x.view(x.size(0), -1).mean(1).view(*shape)
-        std = x.view(x.size(0), -1).std(1).view(*shape)
-
-        y = (x - mean) / (std + self.eps)
-        if self.affine:
-            shape = [1, -1] + [1] * (x.dim() - 2)
-            y = self.gamma.view(*shape) * y + self.beta.view(*shape)
-        return y
-
-
-class FCBlock(nn.Module):
-    def __init__(self,
-                 hidden_ch,
-                 num_hidden_layers,
-                 in_features,
-                 out_features,
-                 outermost_linear=False):
-        super().__init__()
-
-        self.net = []
-        self.net.append(FCLayer(in_features=in_features, out_features=hidden_ch))
-
-        for i in range(num_hidden_layers):
-            self.net.append(FCLayer(in_features=hidden_ch, out_features=hidden_ch))
-
-        if outermost_linear:
-            self.net.append(nn.Linear(in_features=hidden_ch, out_features=out_features))
-        else:
-            self.net.append(FCLayer(in_features=hidden_ch, out_features=out_features))
-
-        self.net = nn.Sequential(*self.net)
-        self.net.apply(self.init_weights)
-
-    def __getitem__(self,item):
-        return self.net[item]
-
-    def init_weights(self, m):
-        if type(m) == nn.Linear:
-            nn.init.kaiming_normal_(m.weight, a=0.0, nonlinearity='relu', mode='fan_in')
-
-    def forward(self, input):
-        return self.net(input)
 
 
 if __name__ == "__main__":

@@ -136,3 +136,5 @@ fusibile
 visualization/final_model_000049.ckpt
 move.py
 lists/dtu/subsub_train.txt
+*.pth
+saved
