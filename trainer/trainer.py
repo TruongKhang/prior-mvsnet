@@ -203,11 +203,13 @@ class Trainer(BaseTrainer):
                         conf_est[stage] = outputs[stage]["photometric_confidence"].detach()
                     prior_state.update(depth_est, conf_est, cam_params)
 
-                depth_est = outputs["depth"].detach()
+                depth_est = outputs["final_depth"].detach()
+                mvs_depth = outputs["depth"].detach()
 
                 scalar_outputs = {"loss": loss,
                                   "depth_loss": depth_loss,
                                   "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
+                                  "depth_error_no_refinement": AbsDepthError_metrics(mvs_depth, depth_gt, mask > 0.5),
                                   "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
                                   "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
                                   "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),

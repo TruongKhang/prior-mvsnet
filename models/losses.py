@@ -33,6 +33,7 @@ def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
 
     final_loss, depth_loss = masked_prob_loss(inputs["final_depth"], inputs["final_conf"],
                                               (depth_gt_ms["stage3"], mask_ms["stage3"] > 0.5))
+    total_loss = total_loss + final_loss
 
     return total_loss, depth_loss
 

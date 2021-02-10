@@ -392,7 +392,7 @@ class RefineNet(nn.Module):
         super(RefineNet, self).__init__()
         self.feature_extractor = nn.Sequential(Conv2d(in_c, 64, 3, bn=False, padding=1),
                                                Conv2d(64, 32, 3, bn=False, padding=1),
-                                               Conv2d(32, 32, 3, bn=False, padding=1),
+                                               #Conv2d(32, 32, 3, bn=False, padding=1),
                                                #Conv2d(32, 32, 3, bn=False, padding=1),
                                                Conv2d(32, 32, 3, bn=False, padding=1))
         self.depth_prediction = nn.Sequential(Conv2d(32, 32, 3, bn=False, padding=1),

@@ -209,24 +209,29 @@ class SeqProbMVSNet(nn.Module):
         # all_depth_samples = get_depth_range_samples(depth_values, depth_values.size(1), depth_interval,
         #                                             device=imgs[0].device, dtype=imgs[0].dtype,
         #                                             shape=[batch_size, height, width]) # [B,D,H,W]
-        all_depth_samples = depth_values_stage
-        
+        # all_depth_samples = depth_values_stage
+
         total_dist = 0.0
+        final_depth = depth.detach().unsqueeze(1)
         for stage_idx in range(self.num_stage):
             stage_name = "stage{}".format(stage_idx + 1)
             depth_stage, var_stage = outputs[stage_name]["depth"].detach(), outputs[stage_name]["var"].detach()
             depth_stage = F.interpolate(depth_stage.unsqueeze(1), [height, width], mode='nearest')
             var_stage = F.interpolate(var_stage.unsqueeze(1), [height, width], mode='nearest')
-            dist = torch.exp(- (depth_stage.unsqueeze(1) - all_depth_samples) / (var_stage.unsqueeze(1) + 1e-16))
+            dist = torch.exp(- (depth_stage - final_depth).abs() / (var_stage + 1e-16))
             total_dist = total_dist + dist
         total_dist /= self.num_stage
-        final_depth, indices = torch.max(total_dist, dim=1, keepdim=True)
-        final_conf = torch.gather(total_dist, dim=1, index=indices)
+        #final_conf, indices = torch.max(total_dist, dim=1, keepdim=True)
+        #final_depth = torch.gather(all_depth_samples, dim=1, index=indices)
+        final_conf = total_dist
         feat_img = features[0]["stage3"].detach()
         # depth map refinement
         if self.refine:
-            refined_depth, refined_conf = self.refine_network(final_depth, final_conf, feat_img)
-            outputs["final_depth"] = refined_depth
-            outputs["final_conf"] = refined_conf
+            final_depth, final_conf = self.refine_network(final_depth, final_conf, feat_img)
+        else:
+            final_depth = final_depth.squeeze(1)
+            final_conf = final_conf.squeeze(1)
+        outputs["final_depth"] = final_depth
+        outputs["final_conf"] = final_conf
 
         return outputs
