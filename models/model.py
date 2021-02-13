@@ -225,13 +225,14 @@ class SeqProbMVSNet(nn.Module):
         #final_depth = torch.gather(all_depth_samples, dim=1, index=indices)
         final_conf = total_dist
         feat_img = features[0]["stage3"].detach()
+        final_depth /= depth_scale
         # depth map refinement
         if self.refine:
             final_depth, final_conf = self.refine_network(final_depth, final_conf, feat_img)
         else:
             final_depth = final_depth.squeeze(1)
             final_conf = final_conf.squeeze(1)
-        outputs["final_depth"] = final_depth
+        outputs["final_depth"] = final_depth * depth_scale
         outputs["final_conf"] = final_conf
 
         return outputs
