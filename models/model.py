@@ -15,7 +15,7 @@ class DepthNet(nn.Module):
                  occ_shared_channels=(128, 128, 128), occ_global_channels=(64, 16, 4)):
         super(DepthNet, self).__init__()
         self.occ_shared_mlp = SharedMLP(2 * feature_channels + depth_channels, occ_shared_channels, ndim=2, bn=True)
-        self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels, bn=False)
+        self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels, bn=True)
         self.occ_pred = nn.Sequential(nn.Conv1d(occ_global_channels[-1], 1, 1), nn.Sigmoid())
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
@@ -131,7 +131,7 @@ class SeqProbMVSNet(nn.Module):
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
         self.dnet = DepthNet(feature_channels=self.feature.out_channels[0], depth_channels=1,
-                             occ_shared_channels=(32,), occ_global_channels=(4,))
+                             occ_shared_channels=(128,128,128), occ_global_channels=(64,16,4))
         if use_prior:
             self.pr_net = PriorNet()
             if pretrained_prior is not None:
