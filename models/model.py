@@ -4,14 +4,19 @@ import torch.nn.functional as F
 from .module import depth_regression, conf_regression, CostRegNet, FeatureNet, RefineNet, get_depth_range_samples
 from .utils.warping import homo_warping_3D
 from .prior_net import PriorNet
+from .visibility import SharedMLP
 
 
 Align_Corners_Range = False
 
 
 class DepthNet(nn.Module):
-    def __init__(self):
+    def __init__(self, image_feature_channels=8, occ_depth_channels=0, occ_shared_channels=(128, 128, 128),
+                 occ_global_channels=(64, 16, 4)):
         super(DepthNet, self).__init__()
+        self.occ_shared_mlp = SharedMLP(2 * image_feature_channels + occ_depth_channels, occ_shared_channels, ndim=2)
+        self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels)
+        self.occ_pred = nn.Conv1d(occ_global_channels[-1], 1, 1)
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
                 log=False):
