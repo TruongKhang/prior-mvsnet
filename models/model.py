@@ -11,19 +11,26 @@ Align_Corners_Range = False
 
 
 class DepthNet(nn.Module):
-    def __init__(self, image_feature_channels=8, occ_depth_channels=0, occ_shared_channels=(128, 128, 128),
-                 occ_global_channels=(64, 16, 4)):
+    def __init__(self, feature_channels=(8, 8, 8), depth_channels=0,
+                 occ_shared_channels=(128, 128, 128), occ_global_channels=(64, 16, 4)):
         super(DepthNet, self).__init__()
-        self.occ_shared_mlp = SharedMLP(2 * image_feature_channels + occ_depth_channels, occ_shared_channels, ndim=2)
+        self.occ_shared_mlp = nn.ModuleList([SharedMLP(2 * c + depth_channels, occ_shared_channels, ndim=2)
+                                             for c in feature_channels])
         self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels)
         self.occ_pred = nn.Conv1d(occ_global_channels[-1], 1, 1)
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
-                log=False):
+                log=False, stage_idx=0, depth_min=None, depth_max=None):
         proj_matrices = torch.unbind(proj_matrices, 1)
         assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
         num_views = len(features)
+
+        # normalize depth
+        batch_size, num_channels, height, width = features[0].size()
+        depth_min, depth_max = depth_min.view(-1, 1, 1, 1), depth_max.view(-1, 1, 1, 1)
+        norm_depth_values = (depth_values - depth_min) / (depth_max - depth_min)
+        norm_depth_values = norm_depth_values.unsqueeze(1)
 
         # step 1. feature extraction
         # in: images; out: 32-channel feature maps
@@ -34,7 +41,8 @@ class DepthNet(nn.Module):
         ref_volume = ref_feature.unsqueeze(2).repeat(1, 1, num_depth, 1, 1)
         volume_sum = ref_volume
         volume_sq_sum = ref_volume ** 2
-        del ref_volume
+        weight_sum = 1.0
+        # del ref_volume
         for src_fea, src_proj in zip(src_features, src_projs):
             #warpped features
             src_proj_new = src_proj[:, 0].clone()
@@ -44,16 +52,25 @@ class DepthNet(nn.Module):
             warped_volume = homo_warping_3D(src_fea, src_proj_new, ref_proj_new, depth_values)
             # warped_volume = homo_warping(src_fea, src_proj[:, 2], ref_proj[:, 2], depth_values)
 
+            vis_inputs = torch.cat((ref_volume, warped_volume, norm_depth_values), dim=1)
+            vis_inputs = vis_inputs.view(batch_size, 2*num_channels+1, num_depth, -1)
+            vis_map = self.occ_shared_mlp[stage_idx](vis_inputs)
+            vis_map, _ = torch.max(vis_map, dim=2)
+            vis_map = self.occ_pred(self.occ_global_mlp(vis_map)) # [B, 1, H*W]
+            vis_map = F.sigmoid(vis_map).view(batch_size, 1, 1, height, width)
+            weight_sum = weight_sum + vis_map
+
             if self.training:
-                volume_sum = volume_sum + warped_volume
-                volume_sq_sum = volume_sq_sum + warped_volume ** 2
+                volume_sum = volume_sum + warped_volume * vis_map
+                volume_sq_sum = volume_sq_sum + (warped_volume ** 2) * vis_map
             else:
                 # TODO: this is only a temporal solution to save memory, better way?
-                volume_sum += warped_volume
-                volume_sq_sum += warped_volume.pow_(2)  # the memory of warped_volume has been modified
+                volume_sum += warped_volume * vis_map
+                volume_sq_sum += warped_volume.pow_(2) * vis_map  # the memory of warped_volume has been modified
             del warped_volume
         # aggregate multiple feature volumes by variance
-        volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
+        # volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
+        volume_variance = volume_sq_sum.div_(weight_sum).sub_(volume_sum.div_(weight_sum).pow_(2))
 
         # step 3. cost volume regularization
         cost_reg = cost_regularization(volume_variance)
@@ -107,7 +124,8 @@ class SeqProbMVSNet(nn.Module):
         if self.refine:
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
-        self.dnet = DepthNet()
+        self.dnet = DepthNet(feature_channels=self.feature.out_channels, depth_channels=1,
+                             occ_shared_channels=(64, 64, 64), occ_global_channels=(64, 16, 4))
         if use_prior:
             self.pr_net = PriorNet()
             if pretrained_prior is not None:
@@ -145,6 +163,7 @@ class SeqProbMVSNet(nn.Module):
         depth_min = float(depth_values[0, 0].cpu().numpy())
         depth_max = float(depth_values[0, -1].cpu().numpy())
         depth_interval = (depth_max - depth_min) / depth_values.size(1)
+        dmap_min, dmap_max = depth_values[:, 0], depth_values[:, -1]
 
         # step 1. feature extraction
         features = []
@@ -188,7 +207,8 @@ class SeqProbMVSNet(nn.Module):
 
             log_likelihood = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
-                                       cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx], log=True)
+                                       cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
+                                       log=True, stage_idx=stage_idx, depth_min=dmap_min, depth_max=dmap_max)
 
             if prior is not None:
                 prior_depths, prior_confs = prior[stage_name]
