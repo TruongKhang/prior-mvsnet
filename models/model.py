@@ -14,10 +14,10 @@ class DepthNet(nn.Module):
     def __init__(self, feature_channels=(8, 8, 8), depth_channels=0,
                  occ_shared_channels=(128, 128, 128), occ_global_channels=(64, 16, 4)):
         super(DepthNet, self).__init__()
-        self.occ_shared_mlp = nn.ModuleList([SharedMLP(2 * c + depth_channels, occ_shared_channels, ndim=2)
+        self.occ_shared_mlp = nn.ModuleList([SharedMLP(2 * c + depth_channels, occ_shared_channels, ndim=2, bn=True)
                                              for c in feature_channels])
-        self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels)
-        self.occ_pred = nn.Conv1d(occ_global_channels[-1], 1, 1)
+        self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels, bn=False)
+        self.occ_pred = nn.Sequential(nn.Conv1d(occ_global_channels[-1], 1, 1), nn.Sigmoid())
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
                 log=False, stage_idx=0, depth_min=None, depth_max=None):
@@ -57,7 +57,7 @@ class DepthNet(nn.Module):
             vis_map = self.occ_shared_mlp[stage_idx](vis_inputs)
             vis_map, _ = torch.max(vis_map, dim=2)
             vis_map = self.occ_pred(self.occ_global_mlp(vis_map)) # [B, 1, H*W]
-            vis_map = F.sigmoid(vis_map).view(batch_size, 1, 1, height, width)
+            vis_map = vis_map.view(batch_size, 1, 1, height, width)
             weight_sum = weight_sum + vis_map
 
             if self.training:
@@ -125,7 +125,7 @@ class SeqProbMVSNet(nn.Module):
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
         self.dnet = DepthNet(feature_channels=self.feature.out_channels, depth_channels=1,
-                             occ_shared_channels=(64, 64, 64), occ_global_channels=(64, 16, 4))
+                             occ_shared_channels=(32,), occ_global_channels=(4,))
         if use_prior:
             self.pr_net = PriorNet()
             if pretrained_prior is not None:
@@ -145,7 +145,7 @@ class SeqProbMVSNet(nn.Module):
             self.feature.load_state_dict(feat_dict)
             self.cost_regularization.load_state_dict(cost_reg_dict)
 
-        self.mvsnet_parameters = list(self.feature.parameters()) + list(self.cost_regularization.parameters())
+        self.mvsnet_parameters = list(self.feature.parameters()) + list(self.cost_regularization.parameters()) + list(self.dnet.parameters())
 
     def get_log_prior(self, depth, conf, depth_values):
         min_depth, max_depth = depth_values[:, [0], ...], depth_values[:, [-1], ...]
