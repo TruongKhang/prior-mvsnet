@@ -67,10 +67,11 @@ class Trainer(BaseTrainer):
             if self.use_prior:
                 prior = {}
                 if self.config["dataset_name"] == 'dtu':
-                    depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"] # [B,N,1,H,W]
+                    depths, confs, masks = sample_cuda["prior_depths"], sample_cuda["prior_confs"], sample_cuda["prior_masks"] # [B,N,1,H,W]
                     for stage in cam_params.keys():
                         cam_params_stage = cam_params[stage]
-                        warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+                        m = (masks[stage] > 0.5).float()
+                        warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
                         prior[stage] = warped_depths / self.depth_scale, warped_confs
                 else:
                     if prior_state.size() == 4:
@@ -85,8 +86,8 @@ class Trainer(BaseTrainer):
             for otm in self.optimizer:
                 otm.zero_grad()
 
-            outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
-                                 depth_scale=self.depth_scale)
+            outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
+                                 src_prior_depths=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
 
             loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms, dlossw=self.config["trainer"]["dlossw"],
                                               use_prior=self.use_prior)
@@ -174,9 +175,11 @@ class Trainer(BaseTrainer):
                     prior = {}
                     if self.config["dataset_name"] == 'dtu':
                         depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
+                        masks = sample_cuda["prior_masks"]
                         for stage in cam_params.keys():
                             cam_params_stage = cam_params[stage]
-                            warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+                            m = (masks[stage] > 0.5).float()
+                            warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
                             prior[stage] = warped_depths / self.depth_scale, warped_confs
                     else:
                         if prior_state.size() == 4:
@@ -188,8 +191,8 @@ class Trainer(BaseTrainer):
                         else:
                             prior = None
 
-                outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
-                                     depth_scale=self.depth_scale)
+                outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
+                                     src_prior_depths=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
 
                 loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms,
                                                   dlossw=self.config["trainer"]["dlossw"],
