@@ -20,12 +20,12 @@ class DepthNet(nn.Module):
         # self.occ_shared_mlp = SharedMLP(occ_shared_channels[0], occ_shared_channels[1:], ndim=2)
         # self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels, bn=True)
         self.occ_unet = UNet(occ_shared_channels[0], 32, 32, 3, batchnorms=False)
-        self.occ_pred = nn.Sequential(nn.Conv1d(occ_global_channels[-1], 1, 1), nn.Sigmoid())
+        self.occ_pred = nn.Sequential(nn.Conv2d(occ_global_channels[-1], 1, 1), nn.Sigmoid())
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
                 log=False, stage_idx=0, depth_min=None, depth_max=None, prior_depths=None):
 
-        assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
+        assert len(features) == proj_matrices.size(1), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
         assert len(features)-1 == prior_depths.size(1), "Wrong number of views in source prior depths"
         num_views = len(features)
@@ -40,7 +40,7 @@ class DepthNet(nn.Module):
         all_depths = torch.cat((torch.zeros_like(prior_depths[:, [0], ...]), prior_depths), dim=1) # [B, N, 1, H, W]
         warped_prior_depths, warped_prior_feats = homo_warping_2D(all_depths, all_view_features, proj_matrices) # [B, N-1, C, H, W]
         warped_prior_depths = (warped_prior_depths - depth_min) / (depth_max - depth_min)
-        warped_prior_depths = warped_prior_depths.view(-1, num_channels, height, width)
+        warped_prior_depths = warped_prior_depths.view(-1, 1, height, width)
         warped_prior_feats = warped_prior_feats.view(-1, num_channels, height, width)
 
         # step 1. feature extraction
@@ -142,7 +142,7 @@ class SeqProbMVSNet(nn.Module):
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
         self.dnet = DepthNet(feature_channels=self.feature.out_channels, depth_channels=1,
-                             occ_shared_channels=(32, 32, 32), occ_global_channels=(32, 16, 4))
+                             occ_shared_channels=(32, 32, 32), occ_global_channels=(32,))
         if use_prior:
             self.pr_net = PriorNet()
             if pretrained_prior is not None:
@@ -230,14 +230,14 @@ class SeqProbMVSNet(nn.Module):
 
             src_prior_depths, src_prior_confs = src_prior[0][stage_name][:, 1:, ...], src_prior[1][stage_name][:, 1:, ...]
             src_projs = proj_matrices_stage[:, 1:, ...]
-            src_prior_depths, src_prior_confs = masked_depth_conf(src_prior_depths, src_prior_confs, src_projs,
+            src_prior_depths, _ = masked_depth_conf(src_prior_depths.squeeze(2), src_prior_confs.squeeze(2), src_projs,
                                                                   thres_view=1, thres_conf=0.1)
 
             log_likelihood = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
                                        cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
                                        log=True, stage_idx=stage_idx, depth_min=dmap_min, depth_max=dmap_max,
-                                       prior_depths=src_prior_depths)
+                                       prior_depths=src_prior_depths.unsqueeze(2))
 
             if prior is not None:
                 prior_depths, prior_confs = prior[stage_name]

@@ -87,7 +87,7 @@ class Trainer(BaseTrainer):
                 otm.zero_grad()
 
             outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
-                                 src_prior_depths=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
+                                 src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
 
             loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms, dlossw=self.config["trainer"]["dlossw"],
                                               use_prior=self.use_prior)
@@ -192,7 +192,7 @@ class Trainer(BaseTrainer):
                             prior = None
 
                 outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
-                                     src_prior_depths=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
+                                     src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
 
                 loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms,
                                                   dlossw=self.config["trainer"]["dlossw"],
