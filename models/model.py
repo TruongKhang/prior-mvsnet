@@ -99,7 +99,7 @@ class DepthNet(nn.Module):
         # log_prob_volume = F.log_softmax(prob_volume_pre, dim=1)
         prob_volume = F.softmax(prob_volume_pre, dim=1) if not log else F.log_softmax(prob_volume_pre, dim=1)
 
-        return prob_volume
+        return prob_volume, vis_maps
 
 
 class SeqProbMVSNet(nn.Module):
@@ -233,7 +233,7 @@ class SeqProbMVSNet(nn.Module):
             src_prior_depths, _ = masked_depth_conf(src_prior_depths.squeeze(2), src_prior_confs.squeeze(2), src_projs,
                                                                   thres_view=1, thres_conf=0.1)
 
-            log_likelihood = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
+            log_likelihood, vis_maps = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
                                        cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
                                        log=True, stage_idx=stage_idx, depth_min=dmap_min, depth_max=dmap_max,
@@ -255,7 +255,7 @@ class SeqProbMVSNet(nn.Module):
             var = depth_regression(posterior_vol, var)
 
             outputs_stage = {"depth": depth, "photometric_confidence": final_conf, "var": var,
-                             "prior_depth": est_prior_depth, "prior_conf": est_prior_conf}
+                             "prior_depth": est_prior_depth, "prior_conf": est_prior_conf, "vis_maps": vis_maps}
             outputs[stage_name] = outputs_stage
             outputs.update(outputs_stage)
             # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()

@@ -2,6 +2,7 @@ import numpy as np
 import os
 import torch
 import time
+import matplotlib.pyplot as plt
 
 from base import BaseTrainer
 from utils import AbsDepthError_metrics, Thres_metrics, tocuda, DictAverageMeter, inf_loop, tensor2float, tensor2numpy, save_images
@@ -136,7 +137,7 @@ class Trainer(BaseTrainer):
 
         return self.train_metrics.mean()
 
-    def _valid_epoch(self, epoch, save_folder=None):
+    def _valid_epoch(self, epoch, save_folder='saved/'):
         """
         Validate after training an epoch
         :param epoch: Integer, current training epoch.
@@ -144,13 +145,13 @@ class Trainer(BaseTrainer):
         """
         print("Validation at epoch %d, size of validation set: %d, batch_size: %d" % (epoch, len(self.valid_data_loader),
                                                                                      self.valid_data_loader.batch_size))
-        if save_folder is not None:
-            path_depth = os.path.join(save_folder, 'depth_maps')
-            if not os.path.exists(path_depth):
-                os.makedirs(path_depth)
-            path_cfd = os.path.join(save_folder, 'confidence')
-            if not os.path.exists(path_cfd):
-                os.makedirs(path_cfd)
+        # if save_folder is not None:
+        #     path_depth = os.path.join(save_folder, 'depth_maps')
+        #     if not os.path.exists(path_depth):
+        #         os.makedirs(path_depth)
+        #     path_cfd = os.path.join(save_folder, 'confidence')
+        #     if not os.path.exists(path_cfd):
+        #         os.makedirs(path_cfd)
 
         self.model.eval()
         prior_state = PriorState(max_size=4)
@@ -208,6 +209,18 @@ class Trainer(BaseTrainer):
 
                 depth_est = outputs["final_depth"].detach()
                 mvs_depth = outputs["depth"].detach()
+                vis_maps = outputs["vis_maps"]
+                folder = '%s/view%d' % (save_folder, batch_idx)
+                if not os.path.exists(folder):
+                    os.makedirs(folder)
+                ref_view = imgs[0, 0].permute(1, 2, 0).cpu().numpy()
+                plt.imsave('%s/ref_view.png' % save_folder, ref_view)
+                for idx in range(vis_maps.size(1)):
+                    vmap = vis_maps[0, idx].squeeze(0).cpu().numpy()
+                    vmap = (vmap * 255).astype(np.uint8)
+                    plt.imsave('%s/vis_map_src%d.png' % (folder, idx+1), vmap)
+                    src_view = imgs[0, idx+1].permute(1, 2, 0).cpu().numpy()
+                    plt.imsave('%s/src_view%d.png' % (save_folder, idx+1), src_view)
 
                 scalar_outputs = {"loss": loss,
                                   "depth_loss": depth_loss,
