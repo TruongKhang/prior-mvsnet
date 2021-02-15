@@ -269,7 +269,7 @@ class UNet(nn.Module):
 
             self.post = torch.nn.Sequential(
                 torch.nn.ReflectionPad2d(1),
-                torch.nn.Conv2d(3 * F, F, kernel_size=3, stride=1, padding=0),
+                torch.nn.Conv2d(2 * F, F, kernel_size=3, stride=1, padding=0),
                 torch.nn.BatchNorm2d(F),
                 torch.nn.ReLU(),
                 torch.nn.ReflectionPad2d(1),
@@ -300,12 +300,12 @@ class UNet(nn.Module):
             if batchnorms:
                 self.process = torch.nn.Sequential(
                     torch.nn.ReflectionPad2d(1),
-                    torch.nn.Conv2d(F, 2 * F, kernel_size=3, stride=1, padding=0),
-                    torch.nn.BatchNorm2d(2 * F),
+                    torch.nn.Conv2d(F, F, kernel_size=3, stride=1, padding=0),
+                    torch.nn.BatchNorm2d(F),
                     torch.nn.ReLU(),
                     torch.nn.ReflectionPad2d(1),
-                    torch.nn.Conv2d(2 * F, 2 * F, kernel_size=3, stride=1, padding=0),
-                    torch.nn.BatchNorm2d(2 * F),
+                    torch.nn.Conv2d(F, F, kernel_size=3, stride=1, padding=0),
+                    torch.nn.BatchNorm2d(F),
                     torch.nn.ReLU(),
                 )
             else:

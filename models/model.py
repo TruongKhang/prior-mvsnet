@@ -19,7 +19,7 @@ class DepthNet(nn.Module):
                                        for c in feature_channels])
         # self.occ_shared_mlp = SharedMLP(occ_shared_channels[0], occ_shared_channels[1:], ndim=2)
         # self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels, bn=True)
-        self.occ_unet = UNet(occ_shared_channels[0], 32, 32, 3, batchnorms=False)
+        self.occ_unet = UNet(occ_shared_channels[0], 32, 32, 3, batchnorms=True)
         self.occ_pred = nn.Sequential(nn.Conv2d(occ_global_channels[-1], 1, 1), nn.Sigmoid())
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
@@ -41,7 +41,7 @@ class DepthNet(nn.Module):
         warped_prior_depths, warped_prior_feats = homo_warping_2D(all_depths, all_view_features, proj_matrices) # [B, N-1, C, H, W]
         warped_prior_depths = (warped_prior_depths - depth_min) / (depth_max - depth_min)
         warped_prior_depths = warped_prior_depths.view(-1, 1, height, width)
-        warped_prior_feats = warped_prior_feats.view(-1, num_channels, height, width)
+        warped_prior_feats = warped_prior_feats.contiguous().view(-1, num_channels, height, width)
 
         # step 1. feature extraction
         # in: images; out: 32-channel feature maps
@@ -62,7 +62,7 @@ class DepthNet(nn.Module):
         vis_maps = self.occ_unet(self.feat_mlp[stage_idx](vis_inputs)) # [B*(N-1), 32, H, W]
         vis_maps = self.occ_pred(vis_maps)  # [B*(N-1), 1, H, W]
         vis_maps = vis_maps.view(batch_size, -1, 1, height, width)
-        weight_sum = weight_sum + vis_maps.sum(dim=1)
+        weight_sum = weight_sum + vis_maps.sum(dim=1, keepdim=True)
         # if stage_idx == 0:
         #     vis_maps = []
 
