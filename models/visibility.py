@@ -1,5 +1,9 @@
+import torch
 from torch import nn
 import torch.nn.functional as F
+
+from .prior_net import UNet
+from models.utils.warping import homo_warping_2D
 
 
 def init_bn(module):
@@ -265,3 +269,48 @@ class SharedMLP(nn.ModuleList):
         for module in self:
             x = module(x)
         return x
+
+
+class VisNet(nn.Module):
+    def __init__(self, feature_channels=8, depth_channels=0,
+                 occ_shared_channels=(128, 128, 128), occ_global_channels=(64, 16, 4)):
+        super(VisNet, self).__init__()
+        # self.occ_shared_mlp = SharedMLP(2 * feature_channels + depth_channels, occ_shared_channels, ndim=2, bn=True)
+        # self.feat_mlp = nn.ModuleList([SharedMLP(2 * c + depth_channels, (occ_shared_channels[0],), ndim=2)
+        #                                for c in feature_channels])
+
+        # self.occ_shared_mlp = SharedMLP(occ_shared_channels[0], occ_shared_channels[1:], ndim=2)
+        # self.occ_global_mlp = SharedMLP(occ_shared_channels[-1], occ_global_channels, bn=True)
+
+        self.occ_unet = UNet(2 * feature_channels + depth_channels, 32, 32, 3, batchnorms=True)
+        self.occ_pred = nn.Sequential(nn.Conv2d(32, 1, 1),
+                                      nn.Sigmoid())
+
+    def forward(self, features, proj_matrices, prior_depths, depth_min=None, depth_max=None):
+
+        assert len(features) == proj_matrices.size(1), "Different number of images and projection matrices"
+        assert len(features)-1 == prior_depths.size(1), "Wrong number of views in source prior depths"
+        num_views = len(features)
+
+        # normalize depth
+        batch_size, num_channels, height, width = features[0].size()
+        depth_min, depth_max = depth_min.view(-1, 1, 1, 1, 1), depth_max.view(-1, 1, 1, 1, 1)
+
+        all_view_features = torch.stack(features, dim=1)  # .detach() # [B, N, C, H, W]
+        all_depths = torch.cat((torch.zeros_like(prior_depths[:, [0], ...]), prior_depths), dim=1)  # [B, N, 1, H, W]
+        warped_prior_depths, warped_prior_feats = homo_warping_2D(all_depths, all_view_features, proj_matrices)  # [B, N-1, C, H, W]
+        warped_prior_depths = (warped_prior_depths - depth_min) / (depth_max - depth_min)
+        warped_prior_depths = warped_prior_depths.view(-1, 1, height, width)
+        warped_prior_feats = warped_prior_feats.contiguous().view(-1, num_channels, height, width)
+
+        # step 1. feature extraction
+        # in: images; out: 32-channel feature maps
+        ref_feature = features[0]
+
+        # this is for visibility prediction
+        ref_feat = ref_feature.repeat(num_views - 1, 1, 1, 1)
+        vis_inputs = torch.cat((ref_feat, warped_prior_feats, warped_prior_depths), dim=1)
+        vis_maps = self.occ_unet(vis_inputs)  # [B*(N-1), 32, H, W]
+        vis_maps = self.occ_pred(vis_maps)  # [B*(N-1), 1, H, W]
+        vis_maps = vis_maps.view(batch_size, -1, 1, height, width)  # [B, N-1, 1, H, W]
+        return vis_maps
