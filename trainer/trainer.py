@@ -2,7 +2,6 @@ import numpy as np
 import os
 import torch
 import time
-import matplotlib.pyplot as plt
 
 from base import BaseTrainer
 from utils import AbsDepthError_metrics, Thres_metrics, tocuda, DictAverageMeter, inf_loop, tensor2float, tensor2numpy, save_images
@@ -65,15 +64,25 @@ class Trainer(BaseTrainer):
             if is_begin.sum() < len(is_begin):
                 prior_state.reset()
             prior = None
+            vis_masks = {}
             if self.use_prior:
                 prior = {}
                 if self.config["dataset_name"] == 'dtu':
                     depths, confs, masks = sample_cuda["prior_depths"], sample_cuda["prior_confs"], sample_cuda["prior_masks"] # [B,N,1,H,W]
+                    # all_gt_depths = sample_cuda["gt_depths"]
                     for stage in cam_params.keys():
                         cam_params_stage = cam_params[stage]
                         m = (masks[stage] > 0.5).float()
                         warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
                         prior[stage] = warped_depths / self.depth_scale, warped_confs
+
+                        # warped_src_depths, warped_src_cons = homo_warping_2D(all_gt_depths[stage] * m, confs[stage] * m,
+                        #                                                      cam_params_stage)
+                        # ref_gt_depth = all_gt_depths[stage][:, [0], ...]
+                        # abs_depth = (ref_gt_depth - warped_src_depths).abs()
+                        # vis_mask = (ref_gt_depth.repeat(1, warped_src_depths.size(1), 1, 1, 1) > 0) & (
+                        #         warped_src_depths > 0) & (abs_depth > 3)
+                        # vis_masks[stage] = 1 - vis_mask.float()
                 else:
                     if prior_state.size() == 4:
                         depths, confs, proj_matrices = prior_state.get()
@@ -88,7 +97,7 @@ class Trainer(BaseTrainer):
                 otm.zero_grad()
 
             outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
-                                 src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
+                                 src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]), gt_vis=None)
 
             loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms, dlossw=self.config["trainer"]["dlossw"],
                                               use_prior=self.use_prior)
@@ -172,16 +181,24 @@ class Trainer(BaseTrainer):
                 if is_begin.sum() < len(is_begin):
                     prior_state.reset()
                 prior = None
+                vis_masks = {}
                 if self.use_prior:
                     prior = {}
                     if self.config["dataset_name"] == 'dtu':
                         depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
+                        # all_gt_depths = sample_cuda["gt_depths"]
                         masks = sample_cuda["prior_masks"]
                         for stage in cam_params.keys():
                             cam_params_stage = cam_params[stage]
                             m = (masks[stage] > 0.5).float()
                             warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
                             prior[stage] = warped_depths / self.depth_scale, warped_confs
+                            # warped_src_depths, warped_src_cons = homo_warping_2D(all_gt_depths[stage]*m, confs[stage]*m, cam_params_stage)
+                            # ref_gt_depth = all_gt_depths[stage][:, [0], ...]
+                            # abs_depth = (ref_gt_depth - warped_src_depths).abs()
+                            # vis_mask = (ref_gt_depth.repeat(1, warped_src_depths.size(1), 1, 1, 1) > 0) & (
+                            #             warped_src_depths > 0) & (abs_depth > 3)
+                            # vis_masks[stage] = 1 - vis_mask.float()
                     else:
                         if prior_state.size() == 4:
                             depths, confs, proj_matrices = prior_state.get()
@@ -193,7 +210,7 @@ class Trainer(BaseTrainer):
                             prior = None
 
                 outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
-                                     src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
+                                     src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]), gt_vis=None)
 
                 loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms,
                                                   dlossw=self.config["trainer"]["dlossw"],
@@ -209,18 +226,18 @@ class Trainer(BaseTrainer):
 
                 depth_est = outputs["final_depth"].detach()
                 mvs_depth = outputs["depth"].detach()
-                vis_maps = outputs["vis_maps"]
-                folder = '%s/view%d' % (save_folder, batch_idx)
-                if not os.path.exists(folder):
-                    os.makedirs(folder)
-                ref_view = imgs[0, 0].permute(1, 2, 0).cpu().numpy()
-                plt.imsave('%s/ref_view.png' % save_folder, ref_view)
-                for idx in range(vis_maps.size(1)):
-                    vmap = vis_maps[0, idx].squeeze(0).cpu().numpy()
-                    vmap = (vmap * 255).astype(np.uint8)
-                    plt.imsave('%s/vis_map_src%d.png' % (folder, idx+1), vmap)
-                    src_view = imgs[0, idx+1].permute(1, 2, 0).cpu().numpy()
-                    plt.imsave('%s/src_view%d.png' % (save_folder, idx+1), src_view)
+                # vis_maps = vis_masks["stage3"] # outputs["vis_maps"]
+                # folder = '%s/view%d' % (save_folder, batch_idx)
+                # if not os.path.exists(folder):
+                #     os.makedirs(folder)
+                # ref_view = imgs[0, 0].permute(1, 2, 0).cpu().numpy()
+                # plt.imsave('%s/ref_view.png' % save_folder, ref_view)
+                # for idx in range(vis_maps.size(1)):
+                #     vmap = vis_maps[0, idx].squeeze(0).cpu().numpy()
+                #     vmap = (vmap * 255).astype(np.uint8)
+                #     plt.imsave('%s/vis_map_src%d.png' % (folder, idx+1), vmap)
+                #     src_view = imgs[0, idx+1].permute(1, 2, 0).cpu().numpy()
+                #     plt.imsave('%s/src_view%d.png' % (save_folder, idx+1), src_view)
 
                 scalar_outputs = {"loss": loss,
                                   "depth_loss": depth_loss,
