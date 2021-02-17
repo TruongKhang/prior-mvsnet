@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .module import depth_regression, conf_regression, CostRegNet, FeatureNet, RefineNet, get_depth_range_samples
 from .utils.warping import homo_warping_3D, homo_warping_2D, masked_depth_conf
-from .prior_net import PriorNet
+from .prior_net import PriorNet, UNet
 from .visibility import VisNet
 
 
@@ -13,6 +13,8 @@ Align_Corners_Range = False
 class DepthNet(nn.Module):
     def __init__(self):
         super(DepthNet, self).__init__()
+        self.unet = nn.Sequential(UNet(3, 32, 1, 3, batchnorms=False),
+                                  nn.Sigmoid())
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
                 log=False, est_vis=None):
@@ -29,23 +31,21 @@ class DepthNet(nn.Module):
 
         # step 2. differentiable homograph, build cost volume
         ref_volume = ref_feature.unsqueeze(2).repeat(1, 1, num_depth, 1, 1)
-        volume_sum = ref_volume
-        volume_sq_sum = ref_volume ** 2
-        weight_sum = 1.0
-        del ref_volume
+        volume_sum = 0.0 #ref_volume
+        #volume_sq_sum = ref_volume ** 2
+        # weight_sum = 0.0
+        #del ref_volume
 
         # this is for visibility prediction
-        if est_vis is not None:
-            vis_maps = est_vis
-            weight_sum = weight_sum + vis_maps.sum(dim=1, keepdim=True)
-        else:
-            batch_size, height, width = volume_sum.size(0), volume_sum.size(3), volume_sum.size(4)
-            vis_maps = torch.ones((batch_size, num_views-1, 1, height, width), dtype=torch.float32,
-                                  device=volume_sum.device)
-            weight_sum = num_views
-        # if stage_idx == 0:
-        #     vis_maps = []
-
+        # if est_vis is not None:
+        #     vis_maps = est_vis
+        #     weight_sum = weight_sum + vis_maps.sum(dim=1, keepdim=True)
+        # else:
+        #     batch_size, height, width = volume_sum.size(0), volume_sum.size(3), volume_sum.size(4)
+        #     vis_maps = torch.ones((batch_size, num_views-1, 1, height, width), dtype=torch.float32,
+        #                           device=volume_sum.device)
+        #     weight_sum = num_views - 1
+        vis_maps = []
         for src_idx, (src_fea, src_proj) in enumerate(zip(src_features, src_projs)):
             #warpped features
             src_proj_new = src_proj[:, 0].clone()
@@ -55,7 +55,22 @@ class DepthNet(nn.Module):
             warped_volume = homo_warping_3D(src_fea, src_proj_new, ref_proj_new, depth_values)
             # warped_volume = homo_warping(src_fea, src_proj[:, 2], ref_proj[:, 2], depth_values)
 
-            vis_map = vis_maps[:, src_idx, ...].unsqueeze(2)
+            var = (ref_volume - warped_volume) ** 2
+            if est_vis is None:
+                simple_cost_vol = torch.sum(var, dim=1)
+                max_cost, _ = torch.max(simple_cost_vol, dim=1, keepdim=True)
+                min_cost, _ = torch.min(simple_cost_vol, dim=1, keepdim=True)
+                mean_cost, _ = torch.mean(simple_cost_vol, dim=1, keepdim=True)
+                feats = torch.cat((max_cost, min_cost, mean_cost), dim=1)
+                vis_map = self.unet(feats)
+
+            else:
+                vis_map = est_vis[:, src_idx, ...]
+            vis_maps.append(vis_map.detach())
+            vis_map = vis_map.unsqueeze(2)
+            volume_sum += var * vis_map
+
+            """vis_map = vis_maps[:, src_idx, ...].unsqueeze(2)
 
             if self.training:
                 volume_sum = volume_sum + warped_volume * vis_map
@@ -64,10 +79,12 @@ class DepthNet(nn.Module):
                 # TODO: this is only a temporal solution to save memory, better way?
                 volume_sum += warped_volume * vis_map
                 volume_sq_sum += warped_volume.pow_(2) * vis_map  # the memory of warped_volume has been modified
-            del warped_volume
+            del warped_volume"""
+            
         # aggregate multiple feature volumes by variance
         # volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
-        volume_variance = volume_sq_sum.div_(weight_sum).sub_(volume_sum.div_(weight_sum).pow_(2))
+        # volume_variance = volume_sq_sum.div_(weight_sum).sub_(volume_sum.div_(weight_sum).pow_(2))
+        volume_variance = volume_sum / (num_views - 1)
 
         # step 3. cost volume regularization
         cost_reg = cost_regularization(volume_variance)
@@ -79,7 +96,7 @@ class DepthNet(nn.Module):
         # log_prob_volume = F.log_softmax(prob_volume_pre, dim=1)
         prob_volume = F.softmax(prob_volume_pre, dim=1) if not log else F.log_softmax(prob_volume_pre, dim=1)
 
-        return prob_volume
+        return prob_volume, torch.stack(vis_maps, dim=1)
 
 
 class SeqProbMVSNet(nn.Module):
@@ -123,7 +140,7 @@ class SeqProbMVSNet(nn.Module):
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
         self.dnet = DepthNet()
-        self.vis_net = VisNet(self.feature.out_channels[-1], 1)
+        # self.vis_net = VisNet(self.feature.out_channels[-1], 1)
 
         if use_prior:
             self.pr_net = PriorNet()
@@ -144,7 +161,7 @@ class SeqProbMVSNet(nn.Module):
             self.feature.load_state_dict(feat_dict)
             self.cost_regularization.load_state_dict(cost_reg_dict)
 
-        self.mvsnet_parameters = list(self.feature.parameters()) + list(self.cost_regularization.parameters()) + list(self.vis_net.parameters())
+        self.mvsnet_parameters = list(self.feature.parameters()) + list(self.cost_regularization.parameters()) + list(self.dnet.parameters()) #list(self.vis_net.parameters())
 
     def get_log_prior(self, depth, conf, depth_values):
         min_depth, max_depth = depth_values[:, [0], ...], depth_values[:, [-1], ...]
@@ -175,15 +192,15 @@ class SeqProbMVSNet(nn.Module):
         outputs = {}
         depth, cur_depth = None, None
 
-        vis_maps_hr = None
-        if gt_vis is None:
-            src_prior_depths, src_prior_confs = src_prior[0]["stage3"][:, 1:, ...], src_prior[1]["stage3"][:, 1:, ...]
-            src_projs = proj_matrices["stage3"][:, 1:, ...]
-            src_prior_depths, _ = masked_depth_conf(src_prior_depths.squeeze(2), src_prior_confs.squeeze(2), src_projs,
-                                                    thres_view=1, thres_conf=0.1)
-            vis_maps_hr = self.vis_net([feat["stage3"] for feat in features], proj_matrices["stage3"],
-                                       prior_depths=src_prior_depths.unsqueeze(2), depth_min=dmap_min, depth_max=dmap_max)
-
+        # vis_maps_hr = None
+        # if gt_vis is None:
+        #     src_prior_depths, src_prior_confs = src_prior[0]["stage3"][:, 1:, ...], src_prior[1]["stage3"][:, 1:, ...]
+        #     src_projs = proj_matrices["stage3"][:, 1:, ...]
+        #     src_prior_depths, _ = masked_depth_conf(src_prior_depths.squeeze(2), src_prior_confs.squeeze(2), src_projs,
+        #                                             thres_view=1, thres_conf=0.1)
+        #     vis_maps_hr = self.vis_net([feat["stage3"] for feat in features], proj_matrices["stage3"],
+        #                                prior_depths=src_prior_depths.unsqueeze(2), depth_min=dmap_min, depth_max=dmap_max)
+        vis_maps = None
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
@@ -202,15 +219,20 @@ class SeqProbMVSNet(nn.Module):
             else:
                 cur_depth = depth_values
 
-            if gt_vis is None:
-                if stage_idx < self.num_stage - 1:
-                    v = vis_maps_hr.detach()
-                else:
-                    v = vis_maps_hr
-                vis_maps = F.interpolate(v.view(-1, 1, height, width), [height // int(stage_scale), width // int(stage_scale)], mode='nearest')
+            if vis_maps is not None:
+                vis_maps = F.interpolate(vis_maps.view(-1, 1, vis_maps.size(3), vis_maps.size(4)),
+                                         [height // int(stage_scale), width // int(stage_scale)], mode='nearest')
                 vis_maps = vis_maps.view(batch_size, -1, 1, height//int(stage_scale), width//int(stage_scale))
-            else:
-                vis_maps = gt_vis[stage_name]
+
+            # if gt_vis is None:
+            #     if stage_idx < self.num_stage - 1:
+            #         v = vis_maps_hr.detach()
+            #     else:
+            #         v = vis_maps_hr
+            #     vis_maps = F.interpolate(v.view(-1, 1, height, width), [height // int(stage_scale), width // int(stage_scale)], mode='nearest')
+            #     vis_maps = vis_maps.view(batch_size, -1, 1, height//int(stage_scale), width//int(stage_scale))
+            # else:
+            #     vis_maps = gt_vis[stage_name]
 
             depth_range_samples = get_depth_range_samples(cur_depth=cur_depth,
                                                         ndepth=self.ndepths[stage_idx],
@@ -224,7 +246,7 @@ class SeqProbMVSNet(nn.Module):
                                                [self.ndepths[stage_idx], height//int(stage_scale), width//int(stage_scale)],
                                                mode='trilinear', align_corners=Align_Corners_Range).squeeze(1)
 
-            log_likelihood = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
+            log_likelihood, vis_maps = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
                                        cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
                                        log=True, est_vis=vis_maps)
