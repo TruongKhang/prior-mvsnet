@@ -203,8 +203,12 @@ class SeqProbMVSNet(nn.Module):
                 cur_depth = depth_values
 
             if gt_vis is None:
-                vis_maps = F.interpolate(vis_maps_hr.view(-1, 1, height, width), [height // int(stage_scale), width // int(stage_scale)], mode='nearest')
-                vis_maps = vis_maps.view(batch_size, -1, 1, height, width)
+                if stage_idx < self.num_stage - 1:
+                    v = vis_maps_hr.detach()
+                else:
+                    v = vis_maps_hr
+                vis_maps = F.interpolate(v.view(-1, 1, height, width), [height // int(stage_scale), width // int(stage_scale)], mode='nearest')
+                vis_maps = vis_maps.view(batch_size, -1, 1, height//int(stage_scale), width//int(stage_scale))
             else:
                 vis_maps = gt_vis[stage_name]
 

@@ -396,8 +396,8 @@ class RefineNet(nn.Module):
                                                #Conv2d(32, 32, 3, bn=False, padding=1),
                                                Conv2d(32, 32, 3, bn=False, padding=1))
         self.depth_prediction = nn.Sequential(Conv2d(32, 32, 3, bn=False, padding=1),
-                                              Conv2d(32, 32, 3, bn=False, padding=1),
-                                              #Conv2d(32, 32, 3, bn=False, padding=1),
+                                              # Conv2d(32, 32, 3, bn=False, padding=1),
+                                              # Conv2d(32, 32, 3, bn=False, padding=1),
                                               nn.Conv2d(32, 1, 1))
         self.conf_prediction = nn.Sequential(Conv2d(34, 64, 3, bn=False, padding=1),
                                              Conv2d(64, 32, 3, bn=False, padding=1),
