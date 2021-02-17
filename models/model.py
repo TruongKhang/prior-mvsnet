@@ -13,7 +13,7 @@ Align_Corners_Range = False
 class DepthNet(nn.Module):
     def __init__(self):
         super(DepthNet, self).__init__()
-        self.unet = nn.Sequential(UNet(3, 32, 1, 3, batchnorms=False),
+        self.unet = nn.Sequential(UNet(3, 32, 1, 3, batchnorms=True),
                                   nn.Sigmoid())
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
@@ -60,7 +60,7 @@ class DepthNet(nn.Module):
                 simple_cost_vol = torch.sum(var, dim=1)
                 max_cost, _ = torch.max(simple_cost_vol, dim=1, keepdim=True)
                 min_cost, _ = torch.min(simple_cost_vol, dim=1, keepdim=True)
-                mean_cost, _ = torch.mean(simple_cost_vol, dim=1, keepdim=True)
+                mean_cost = torch.mean(simple_cost_vol, dim=1, keepdim=True)
                 feats = torch.cat((max_cost, min_cost, mean_cost), dim=1)
                 vis_map = self.unet(feats)
 
