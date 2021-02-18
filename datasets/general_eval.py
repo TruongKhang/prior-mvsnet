@@ -282,11 +282,11 @@ class MVSDataset(Dataset):
             #in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>8}.pfm'.format(stage, scan, vid))
             #in_depth = np.array(read_pfm(in_depth_file)[0], dtype=np.float32) * (mask_vid[stage] > 0.5).astype(np.float32)
             in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>8}.png'.format(stage, scan, vid))
-            in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10 * (mask_vid[stage] > 0.5).astype(np.float32)
+            in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10 #* (mask_vid[stage] > 0.5).astype(np.float32)
             #in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>8}.pfm'.format(stage, scan, vid))
             #in_conf = np.array(read_pfm(in_conf_file)[0], dtype=np.float32) * (mask_vid[stage] > 0.5).astype(np.float32)
             in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>8}.png'.format(stage, scan, vid))
-            in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255 * (mask_vid[stage] > 0.5).astype(np.float32)
+            in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255 #* (mask_vid[stage] > 0.5).astype(np.float32)
             height, width = in_depth.shape
             input_depths["stage1"].append(cv2.resize(in_depth, (width//4, height//4), interpolation=cv2.INTER_NEAREST))
             input_depths["stage2"].append(cv2.resize(in_depth, (width//2, height//2), interpolation=cv2.INTER_NEAREST))

@@ -1,6 +1,7 @@
 import argparse, os, time, sys, gc, cv2
 from PIL import Image
 import torch
+import torch.nn.functional as F
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import numpy as np
@@ -12,7 +13,7 @@ from datasets.data_io import read_pfm, save_pfm
 from plyfile import PlyData, PlyElement
 from gipuma import gipuma_filter
 from utils import tocuda, print_args, generate_pointcloud, tensor2numpy
-from models.utils.warping import homo_warping_2D
+from models.utils.warping import homo_warping_2D, masked_depth_conf
 
 from multiprocessing import Pool
 from functools import partial
@@ -190,6 +191,7 @@ def save_depth(testlist, config):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
+    depth_scale_tt = {"Family": 0.0006, "Train": 0.0003, "Playground": 0.001, "Panther": 0.001, "M60": 0.001, "Lighthouse": 0.002, "Horse": 0.00015, "Francis": 0.001}
 
     with torch.no_grad():
         for batch_idx, sample in enumerate(test_data_loader):
@@ -198,16 +200,41 @@ def save_depth(testlist, config):
             is_begin = sample['is_begin'].type(torch.uint8)
             num_stage = len(config["arch"]["args"]["ndepths"])
 
+            #scene = sample["filename"][0].split('/')[0]
+            depth_scale = 1.0 #depth_scale_tt[scene]
+
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
             prior = {}
-            depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
+            depths, confs = sample_cuda["prior_depths"]["stage3"], sample_cuda["prior_confs"]["stage3"]  # [B,N,1,H,W]
+            src_depths, src_confs = depths[:, 1:, 0, ...], confs[:, 1:, 0, ...]
+            proj_matrices = cam_params["stage3"][:, 1:, ...]
+            filtered_src_depths, filtered_src_confs = masked_depth_conf(src_depths, src_confs, proj_matrices, thres_view=1, thres_conf=0.1)
+            depths[:, 1:, 0, ...] = filtered_src_depths
+            confs[:, 1:, 0, ...] = (filtered_src_confs > 0).float()
+            warped_depths, warped_confs = homo_warping_2D(depths, confs, cam_params["stage3"])
+            warped_depths /= depth_scale
+
+            """all_gt_depths = sample_cuda["gt_depths"]
+            vis_masks = {}
             for stage in cam_params.keys():
-                cam_params_stage = cam_params[stage]
-                warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
-                prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
+                warped_src_depths, _ = homo_warping_2D(all_gt_depths[stage], sample_cuda["prior_confs"][stage], cam_params[stage])
+                ref_gt_depth = all_gt_depths[stage][:, [0], ...]
+                abs_depth = (ref_gt_depth - warped_src_depths).abs()
+                vis_mask = (ref_gt_depth.repeat(1, warped_src_depths.size(1), 1, 1, 1) > 0) & (warped_src_depths > 0) & (abs_depth > 3)
+                vis_masks[stage] = 1 - vis_mask.float()"""
+
+            scale = {"stage1": 4, "stage2": 2, "stage3": 1}
+            H, W = warped_depths.size(3), warped_depths.size(4)
+            for stage in cam_params.keys():
+                warped_depths_stage = F.interpolate(warped_depths.squeeze(2), [H//scale[stage], W//scale[stage]], mode='nearest')
+                warped_confs_stage = F.interpolate(warped_confs.squeeze(2), [H//scale[stage], W//scale[stage]], mode='nearest')
+                prior[stage] = warped_depths_stage.unsqueeze(2), warped_confs_stage.unsqueeze(2)
+                #cam_params_stage = cam_params[stage]
+                #warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+                #prior[stage] = warped_depths / config["trainer"]["depth_scale"], warped_confs
 
             outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
-                            depth_scale=config["trainer"]["depth_scale"])
+                            depth_scale=depth_scale, src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]), gt_vis=None)
             end_time = time.time()
             outputs = tensor2numpy(outputs)
             del sample_cuda
@@ -218,8 +245,8 @@ def save_depth(testlist, config):
                                                       imgs[0].shape))
 
             # save depth maps and confidence maps
-            for filename, cam, img, depth_est, photometric_confidence in zip(filenames, cams, imgs, outputs["depth"],
-                                                                             outputs["photometric_confidence"]):
+            for filename, cam, img, depth_est, photometric_confidence in zip(filenames, cams, imgs, outputs["final_depth"],
+                                                                             outputs["final_conf"]):
                 img = img[0]  # ref view
                 cam = cam[0]  # ref cam
                 depth_filename = os.path.join(args.outdir, filename.format('depth_est', '.pfm'))
@@ -286,7 +313,7 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
                         np.vstack((xyz_ref, np.ones_like(x_ref))))[:3]
     # source view x, y
     K_xyz_src = np.matmul(intrinsics_src, xyz_src)
-    xy_src = K_xyz_src[:2] / K_xyz_src[2:3]
+    xy_src = K_xyz_src[:2] / (K_xyz_src[2:3] + 1e-16)
 
     ## step2. reproject the source view points with source view depth estimation
     # find the depth estimation of the source view
@@ -305,7 +332,7 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
     # source view x, y, depth
     depth_reprojected = xyz_reprojected[2].reshape([height, width]).astype(np.float32)
     K_xyz_reprojected = np.matmul(intrinsics_ref, xyz_reprojected)
-    xy_reprojected = K_xyz_reprojected[:2] / K_xyz_reprojected[2:3]
+    xy_reprojected = K_xyz_reprojected[:2] / (K_xyz_reprojected[2:3] + 1e-16)
     x_reprojected = xy_reprojected[0].reshape([height, width]).astype(np.float32)
     y_reprojected = xy_reprojected[1].reshape([height, width]).astype(np.float32)
 
@@ -322,7 +349,7 @@ def check_geometric_consistency(depth_ref, intrinsics_ref, extrinsics_ref, depth
 
     # check |d_reproj-d_1| / d_1 < 0.01
     depth_diff = np.abs(depth_reprojected - depth_ref)
-    relative_depth_diff = depth_diff / depth_ref
+    relative_depth_diff = depth_diff / (depth_ref + 1e-16)
 
     mask = np.logical_and(dist < 1, relative_depth_diff < 0.01)
     depth_reprojected[~mask] = 0
@@ -342,7 +369,8 @@ def filter_depth(pair_folder, scan_folder, out_folder, plyfilename):
 
     # for each reference view and the corresponding source views
     for ref_view, src_views in pair_data:
-        # src_views = src_views[:args.num_view]
+        #print(len(src_views))
+        # src_views = src_views[:5]
         # load the camera parameters
         ref_intrinsics, ref_extrinsics = read_camera_parameters(
             os.path.join(scan_folder, 'cams/{:0>8}_cam.txt'.format(ref_view)))
@@ -454,11 +482,11 @@ def init_worker():
 
 
 def pcd_filter_worker(scan):
-    if args.testlist != "all":
-        scan_id = int(scan[4:])
-        save_name = 'mvsnet{:0>3}_l3.ply'.format(scan_id)
-    else:
-        save_name = '{}.ply'.format(scan)
+    #if args.testlist != "all":
+    #    scan_id = int(scan[4:])
+    #    save_name = 'mvsnet{:0>3}_l3.ply'.format(scan_id)
+    #else:
+    save_name = '{}.ply'.format(scan)
     pair_folder = os.path.join(args.testpath, scan)
     scan_folder = os.path.join(args.outdir, scan)
     out_folder = os.path.join(args.outdir, scan)
@@ -466,8 +494,10 @@ def pcd_filter_worker(scan):
 
 
 def pcd_filter(testlist, number_worker):
+    for scan in testlist:
+        pcd_filter_worker(scan)
 
-    partial_func = partial(pcd_filter_worker)
+    """partial_func = partial(pcd_filter_worker)
 
     p = Pool(number_worker, init_worker)
     try:
@@ -477,7 +507,7 @@ def pcd_filter(testlist, number_worker):
         p.terminate()
     else:
         p.close()
-    p.join()
+    p.join()"""
 
 
 if __name__ == '__main__':
@@ -489,17 +519,17 @@ if __name__ == '__main__':
             testlist = [line.rstrip() for line in content]
     else:
         #for tanks & temples or eth3d or colmap
-        testlist = [e for e in os.listdir(args.testpath) if os.path.isdir(os.path.join(args.testpath, e))] \
+        testlist = [e for e in os.listdir(args.testpath) if os.path.isdir(os.path.join(args.testpath, e)) and ('input' not in e)] \
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
     save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
-    # if args.filter_method != "gipuma":
+    #if args.filter_method != "gipuma":
     #     #support multi-processing, the default number of worker is 4
-    #     pcd_filter(testlist, args.num_worker)
-    # else:
-    #     gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
-    #                   args.fusibile_exe_path)
+    #    pcd_filter(testlist, args.num_worker)
+    #else:
+    #    gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
+    #                  args.fusibile_exe_path)
 

@@ -14,7 +14,7 @@ class DepthNet(nn.Module):
     def __init__(self):
         super(DepthNet, self).__init__()
         self.unet = nn.Sequential(UNet(3, 32, 1, 3, batchnorms=True),
-                                  nn.Sigmoid())
+                                  nn.Sigmoid(), nn.Threshold(0.05, 0.0))
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
                 log=False, est_vis=None):
