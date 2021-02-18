@@ -11,13 +11,14 @@ Align_Corners_Range = False
 
 
 class DepthNet(nn.Module):
-    def __init__(self):
+    def __init__(self, in_c):
         super(DepthNet, self).__init__()
+        self.regress_cost = nn.Conv3d(in_c, 1, 1)
         self.unet = nn.Sequential(UNet(3, 32, 1, 3, batchnorms=True),
                                   nn.Sigmoid(), nn.Threshold(0.05, 0.0))
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
-                log=False, est_vis=None):
+                log=False, est_vis=None, prior_info=None):
 
         assert len(features) == proj_matrices.size(1), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
@@ -45,6 +46,10 @@ class DepthNet(nn.Module):
         #     vis_maps = torch.ones((batch_size, num_views-1, 1, height, width), dtype=torch.float32,
         #                           device=volume_sum.device)
         #     weight_sum = num_views - 1
+        depth_info, mask_info = prior_info
+        ref_depth, src_depths = depth_info
+        ref_mask, src_masks = mask_info
+
         vis_maps = []
         for src_idx, (src_fea, src_proj) in enumerate(zip(src_features, src_projs)):
             #warpped features
@@ -55,15 +60,17 @@ class DepthNet(nn.Module):
             warped_volume = homo_warping_3D(src_fea, src_proj_new, ref_proj_new, depth_values)
             # warped_volume = homo_warping(src_fea, src_proj[:, 2], ref_proj[:, 2], depth_values)
 
-            var = (ref_volume - warped_volume) ** 2
+            var = (ref_volume - warped_volume) ** 2 # [B, C, D, H, W]
             if est_vis is None:
-                simple_cost_vol = torch.sum(var, dim=1)
-                max_cost, _ = torch.max(simple_cost_vol, dim=1, keepdim=True)
-                min_cost, _ = torch.min(simple_cost_vol, dim=1, keepdim=True)
-                mean_cost = torch.mean(simple_cost_vol, dim=1, keepdim=True)
-                feats = torch.cat((max_cost, min_cost, mean_cost), dim=1)
-                vis_map = self.unet(feats)
+                rel_diff = (ref_depth - src_depths[:, src_idx, ...]).abs() / (ref_depth + 1e-10)
+                mask = ref_mask # & src_masks[:, src_idx, ...]
 
+                simple_cost_vol = self.regress_cost(var).squeeze(1) #torch.sum(var, dim=1)
+                max_cost, _ = torch.max(simple_cost_vol, dim=1, keepdim=True)
+                # min_cost, _ = torch.min(simple_cost_vol, dim=1, keepdim=True)
+                mean_cost = torch.mean(simple_cost_vol, dim=1, keepdim=True)
+                feats = torch.cat((max_cost, mean_cost, rel_diff * mask.float()), dim=1)
+                vis_map = self.unet(feats)
             else:
                 vis_map = est_vis[:, src_idx, ...]
             vis_maps.append(vis_map.detach())
@@ -246,11 +253,6 @@ class SeqProbMVSNet(nn.Module):
                                                [self.ndepths[stage_idx], height//int(stage_scale), width//int(stage_scale)],
                                                mode='trilinear', align_corners=Align_Corners_Range).squeeze(1)
 
-            log_likelihood, vis_maps = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
-                                       num_depth=self.ndepths[stage_idx],
-                                       cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
-                                       log=True, est_vis=vis_maps)
-
             if prior is not None:
                 prior_depths, prior_confs = prior[stage_name]
                 est_prior_depth, est_prior_conf = self.pr_net(prior_depths, prior_confs)
@@ -258,6 +260,13 @@ class SeqProbMVSNet(nn.Module):
             else:
                 log_prior = 0.0
                 est_prior_depth, est_prior_conf = None, None
+
+            all_prior_depths = est_prior_depth.detach(), prior[stage_name][0]
+            all_prior_masks = (est_prior_conf.detach() > 0.1), (prior[stage_name][0] > 0)
+            log_likelihood, vis_maps = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
+                                       num_depth=self.ndepths[stage_idx],
+                                       cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
+                                       log=True, est_vis=vis_maps, prior_info=(all_prior_depths, all_prior_masks))
 
             log_posterior = log_likelihood + log_prior
             posterior_vol = F.softmax(log_posterior, dim=1)

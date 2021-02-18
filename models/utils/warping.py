@@ -227,6 +227,28 @@ def masked_depth_conf(depths, confs, proj_matrices, thres_view=3, thres_conf=0.9
     return depths * all_masks, confs * all_masks
 
 
+def get_prior(depths, confs, project_matrices, depth_scale=1.0):
+    prior = {}
+    src_depths, src_confs = depths[:, 1:, 0, ...], confs[:, 1:, 0, ...]
+    src_proj_matrices = project_matrices[:, 1:, ...]
+    filtered_src_depths, filtered_src_confs = masked_depth_conf(src_depths, src_confs, src_proj_matrices, thres_view=1,
+                                                                thres_conf=0.1)
+    depths[:, 1:, 0, ...] = filtered_src_depths
+    confs[:, 1:, 0, ...] = (filtered_src_confs > 0).float()
+    warped_depths, warped_confs = homo_warping_2D(depths, confs, project_matrices)
+    warped_depths /= depth_scale
+
+    scale = {"stage1": 4, "stage2": 2, "stage3": 1}
+    H, W = warped_depths.size(3), warped_depths.size(4)
+    for stage in project_matrices.keys():
+        warped_depths_stage = F.interpolate(warped_depths.squeeze(2), [H // scale[stage], W // scale[stage]],
+                                            mode='nearest')
+        warped_confs_stage = F.interpolate(warped_confs.squeeze(2), [H // scale[stage], W // scale[stage]],
+                                           mode='nearest')
+        prior[stage] = warped_depths_stage.unsqueeze(2), warped_confs_stage.unsqueeze(2)
+    return prior
+
+
 if __name__ == '__main__':
     from datasets.data_loaders import DTULoader
     from tensorboardX import SummaryWriter

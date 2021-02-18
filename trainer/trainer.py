@@ -1,12 +1,13 @@
 import numpy as np
 import os
 import torch
+import torch.nn.functional as F
 import time
 
 from base import BaseTrainer
 from utils import AbsDepthError_metrics, Thres_metrics, tocuda, DictAverageMeter, inf_loop, tensor2float, tensor2numpy, save_images
 from .data_structure import PriorState
-from models.utils.warping import homo_warping_2D
+from models.utils.warping import homo_warping_2D, get_prior
 
 
 class Trainer(BaseTrainer):
@@ -64,25 +65,17 @@ class Trainer(BaseTrainer):
             if is_begin.sum() < len(is_begin):
                 prior_state.reset()
             prior = None
-            vis_masks = {}
             if self.use_prior:
                 prior = {}
                 if self.config["dataset_name"] == 'dtu':
                     depths, confs, masks = sample_cuda["prior_depths"], sample_cuda["prior_confs"], sample_cuda["prior_masks"] # [B,N,1,H,W]
                     # all_gt_depths = sample_cuda["gt_depths"]
-                    for stage in cam_params.keys():
-                        cam_params_stage = cam_params[stage]
-                        m = (masks[stage] > 0.5).float()
-                        warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
-                        prior[stage] = warped_depths / self.depth_scale, warped_confs
-
-                        # warped_src_depths, warped_src_cons = homo_warping_2D(all_gt_depths[stage] * m, confs[stage] * m,
-                        #                                                      cam_params_stage)
-                        # ref_gt_depth = all_gt_depths[stage][:, [0], ...]
-                        # abs_depth = (ref_gt_depth - warped_src_depths).abs()
-                        # vis_mask = (ref_gt_depth.repeat(1, warped_src_depths.size(1), 1, 1, 1) > 0) & (
-                        #         warped_src_depths > 0) & (abs_depth > 3)
-                        # vis_masks[stage] = 1 - vis_mask.float()
+                    # for stage in cam_params.keys():
+                    #     cam_params_stage = cam_params[stage]
+                    #     # m = (masks[stage] > 0.5).float()
+                    #     warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+                    #     prior[stage] = warped_depths / self.depth_scale, warped_confs
+                    prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"], depth_scale=self.depth_scale)
                 else:
                     if prior_state.size() == 4:
                         depths, confs, proj_matrices = prior_state.get()
@@ -181,24 +174,19 @@ class Trainer(BaseTrainer):
                 if is_begin.sum() < len(is_begin):
                     prior_state.reset()
                 prior = None
-                vis_masks = {}
                 if self.use_prior:
                     prior = {}
                     if self.config["dataset_name"] == 'dtu':
                         depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
                         # all_gt_depths = sample_cuda["gt_depths"]
-                        masks = sample_cuda["prior_masks"]
-                        for stage in cam_params.keys():
-                            cam_params_stage = cam_params[stage]
-                            m = (masks[stage] > 0.5).float()
-                            warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
-                            prior[stage] = warped_depths / self.depth_scale, warped_confs
-                            # warped_src_depths, warped_src_cons = homo_warping_2D(all_gt_depths[stage]*m, confs[stage]*m, cam_params_stage)
-                            # ref_gt_depth = all_gt_depths[stage][:, [0], ...]
-                            # abs_depth = (ref_gt_depth - warped_src_depths).abs()
-                            # vis_mask = (ref_gt_depth.repeat(1, warped_src_depths.size(1), 1, 1, 1) > 0) & (
-                            #             warped_src_depths > 0) & (abs_depth > 3)
-                            # vis_masks[stage] = 1 - vis_mask.float()
+                        # masks = sample_cuda["prior_masks"]
+                        # for stage in cam_params.keys():
+                        #     cam_params_stage = cam_params[stage]
+                        #     m = (masks[stage] > 0.5).float()
+                        #     warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
+                        #     prior[stage] = warped_depths / self.depth_scale, warped_confs
+                        prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"],
+                                          depth_scale=self.depth_scale)
                     else:
                         if prior_state.size() == 4:
                             depths, confs, proj_matrices = prior_state.get()
