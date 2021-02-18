@@ -146,7 +146,7 @@ class SeqProbMVSNet(nn.Module):
         if self.refine:
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
-        self.dnet = DepthNet()
+        self.dnet = DepthNet(self.feature.out_channels[0])
         # self.vis_net = VisNet(self.feature.out_channels[-1], 1)
 
         if use_prior:

@@ -240,7 +240,7 @@ def get_prior(depths, confs, project_matrices, depth_scale=1.0):
 
     scale = {"stage1": 4, "stage2": 2, "stage3": 1}
     H, W = warped_depths.size(3), warped_depths.size(4)
-    for stage in project_matrices.keys():
+    for stage in scale.keys():
         warped_depths_stage = F.interpolate(warped_depths.squeeze(2), [H // scale[stage], W // scale[stage]],
                                             mode='nearest')
         warped_confs_stage = F.interpolate(warped_confs.squeeze(2), [H // scale[stage], W // scale[stage]],
