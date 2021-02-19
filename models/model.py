@@ -14,7 +14,7 @@ class DepthNet(nn.Module):
     def __init__(self, in_c):
         super(DepthNet, self).__init__()
         self.regress_cost = nn.Conv3d(in_c, 1, 1)
-        self.unet = nn.Sequential(UNet(3, 32, 1, 3, batchnorms=True),
+        self.unet = nn.Sequential(UNet(5, 32, 1, 3, batchnorms=True),
                                   nn.Sigmoid(), nn.Threshold(0.05, 0.0))
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
@@ -63,13 +63,13 @@ class DepthNet(nn.Module):
             var = (ref_volume - warped_volume) ** 2 # [B, C, D, H, W]
             if est_vis is None:
                 rel_diff = (ref_depth - src_depths[:, src_idx, ...]).abs() / (ref_depth + 1e-10)
-                mask = ref_mask # & src_masks[:, src_idx, ...]
+                # mask = ref_mask # & src_masks[:, src_idx, ...]
 
                 simple_cost_vol = self.regress_cost(var).squeeze(1) #torch.sum(var, dim=1)
                 max_cost, _ = torch.max(simple_cost_vol, dim=1, keepdim=True)
                 # min_cost, _ = torch.min(simple_cost_vol, dim=1, keepdim=True)
                 mean_cost = torch.mean(simple_cost_vol, dim=1, keepdim=True)
-                feats = torch.cat((max_cost, mean_cost, rel_diff * mask.float()), dim=1)
+                feats = torch.cat((max_cost, mean_cost, rel_diff, ref_mask.float(), src_masks[:, src_idx, ...].float()), dim=1)
                 vis_map = self.unet(feats)
             else:
                 vis_map = est_vis[:, src_idx, ...]
