@@ -199,10 +199,6 @@ def masked_depth_conf(depths, confs, proj_matrices, thres_view=3, thres_conf=0.9
     for id_ref in range(nviews):
         depth_ref, conf_ref = depths[:, id_ref, ...], confs[:, id_ref, ...]
         intrinsics_ref, extrinsics_ref = intrinsics[:, id_ref, ...], extrinsics[:, id_ref, ...]
-        all_srcview_depth_ests = []
-        all_srcview_x = []
-        all_srcview_y = []
-        all_srcview_geomask = []
         # compute the geometric mask
         geo_mask_sum = 0
         photo_mask = conf_ref > thres_conf
@@ -214,12 +210,8 @@ def masked_depth_conf(depths, confs, proj_matrices, thres_view=3, thres_conf=0.9
                                                                                             extrinsics_ref, depth_src,
                                                                                             intrinsics_src, extrinsics_src)
                 geo_mask_sum += geo_mask.float()
-                all_srcview_depth_ests.append(depth_reprojected)
-                all_srcview_x.append(x2d_src)
-                all_srcview_y.append(y2d_src)
-                all_srcview_geomask.append(geo_mask)
 
-        # at least 3 source views matched
+        # at least 1 source views matched
         geo_mask = geo_mask_sum >= thres_view
         final_mask = photo_mask & geo_mask
         all_masks.append(final_mask)
@@ -227,12 +219,12 @@ def masked_depth_conf(depths, confs, proj_matrices, thres_view=3, thres_conf=0.9
     return depths * all_masks, confs * all_masks
 
 
-def get_prior(depths, confs, project_matrices, depth_scale=1.0):
+def get_prior(depths, confs, project_matrices, depth_scale=1.0, thres_view=1, thresh_conf=0.1):
     prior = {}
     src_depths, src_confs = depths[:, 1:, 0, ...], confs[:, 1:, 0, ...]
     src_proj_matrices = project_matrices[:, 1:, ...]
-    filtered_src_depths, filtered_src_confs = masked_depth_conf(src_depths, src_confs, src_proj_matrices, thres_view=1,
-                                                                thres_conf=0.1)
+    filtered_src_depths, filtered_src_confs = masked_depth_conf(src_depths, src_confs, src_proj_matrices,
+                                                                thres_view=thres_view, thres_conf=thresh_conf)
     depths[:, 1:, 0, ...] = filtered_src_depths
     confs[:, 1:, 0, ...] = (filtered_src_confs > 0).float()
     warped_depths, warped_confs = homo_warping_2D(depths, confs, project_matrices)
