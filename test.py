@@ -5,7 +5,6 @@ import torch.nn.functional as F
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import numpy as np
-import open3d as o3d
 from torch.utils.data import Dataset, DataLoader, SequentialSampler
 
 from parse_config import ConfigParser
@@ -362,10 +361,18 @@ def filter_depth(pair_folder, scan_folder, out_folder, plyfilename):
 
     print('Write combined PCD')
     p_all, c_all = [np.concatenate([v[k] for key, v in views.items()], axis=0) for k in range(2)]
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(p_all)
-    pcd.colors = o3d.utility.Vector3dVector(c_all)
-    o3d.io.write_point_cloud(plyfilename, pcd)
+
+    vertexs = np.array([tuple(v) for v in p_all], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+    vertex_colors = np.array([tuple(v) for v in c_all], dtype=[('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+
+    vertex_all = np.empty(len(vertexs), vertexs.dtype.descr + vertex_colors.dtype.descr)
+    for prop in vertexs.dtype.names:
+        vertex_all[prop] = vertexs[prop]
+    for prop in vertex_colors.dtype.names:
+        vertex_all[prop] = vertex_colors[prop]
+
+    el = PlyElement.describe(vertex_all, 'vertex')
+    PlyData([el]).write(plyfilename)
     print("saving the final model to", plyfilename)
 
 
