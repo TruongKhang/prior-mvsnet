@@ -14,7 +14,7 @@ from typing import List
 # from core.nn_utils import bin_op_reduce
 # from utils.io_utils import subplot_map
 
-parser = argparse.ArgumentParser()
+"""parser = argparse.ArgumentParser()
 
 parser.add_argument('--data', type=str, default='')
 parser.add_argument('--pair', type=str, default='')
@@ -24,7 +24,7 @@ parser.add_argument('--pthresh', type=str, default='.8,.7,.8')
 parser.add_argument('--cam_scale', type=float, default=1)
 parser.add_argument('--show_result', action='store_true', default=False)
 
-args = parser.parse_args()
+args = parser.parse_args()"""
 
 
 def get_pixel_grids(height, width):
@@ -84,7 +84,7 @@ def project_img(src_img, dst_depth, src_cam, dst_cam, height=None, width=None): 
     in_range = bin_op_reduce(
         [-1 <= warp_coord[..., 0], warp_coord[..., 0] <= 1, -1 <= warp_coord[..., 1], warp_coord[..., 1] <= 1],
         torch.min).to(src_img.dtype).unsqueeze(1)  # n1hw
-    warped_img = F.grid_sample(src_img, warp_coord, mode='bilinear', padding_mode='zeros', align_corners=False)
+    warped_img = F.grid_sample(src_img, warp_coord, mode='bilinear', padding_mode='zeros')
     return warped_img, in_range
 
 

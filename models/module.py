@@ -8,6 +8,8 @@ import sys
 sys.path.append("..")
 # from utils import local_pcd
 
+from .prior_net import UNetSP
+
 
 def init_bn(module):
     if module.weight is not None:
@@ -399,11 +401,12 @@ class RefineNet(nn.Module):
                                               # Conv2d(32, 32, 3, bn=False, padding=1),
                                               # Conv2d(32, 32, 3, bn=False, padding=1),
                                               nn.Conv2d(32, 1, 1))
-        self.conf_prediction = nn.Sequential(Conv2d(34, 64, 3, bn=False, padding=1),
+        """self.conf_prediction = nn.Sequential(Conv2d(34, 64, 3, bn=False, padding=1),
                                              Conv2d(64, 32, 3, bn=False, padding=1),
                                              #Conv2d(32, 32, 3, bn=False, padding=1),
                                              nn.Conv2d(32, 1, 1),
-                                             nn.Softplus())
+                                             nn.Softplus())"""
+        self.conf_prediction = UNetSP(2, 1, m=8)
 
     def forward(self, depth, conf, feat_img=None):
         inputs = torch.cat((feat_img, depth, conf), dim=1)
@@ -411,7 +414,7 @@ class RefineNet(nn.Module):
 
         depth_residual = self.depth_prediction(latent_feat)
         final_depth = depth + depth_residual
-        input_feat = torch.cat((latent_feat, depth_residual, conf), dim=1).detach()
+        input_feat = torch.cat((depth_residual, conf), dim=1).detach()
         final_conf = self.conf_prediction(input_feat)
         return final_depth.squeeze(1), final_conf.squeeze(1)
 

@@ -28,7 +28,7 @@ def main(config):
         "data_path": config["data_loader"]["args"]["data_path"],
         "data_list": "lists/dtu/val.txt",
         "mode": "val",
-        "num_srcs": config["data_loader"]["args"]["num_srcs"],
+        "num_srcs": 5,
         "num_depths": config["data_loader"]["args"]["num_depths"],
         "interval_scale": config["data_loader"]["args"]["interval_scale"],
         "shuffle": False,
@@ -42,9 +42,9 @@ def main(config):
 
     # build models architecture, then print to console
     model = config.init_obj('arch', module_arch, use_prior=use_prior)
-    """logger.info(model)
-    print('Load pretrained model')
-    checkpoint = torch.load('saved/models/SeqProbMVS/0203_141005/checkpoint-epoch6.pth')
+    #logger.info(model)
+    """print('Load pretrained model')
+    checkpoint = torch.load('saved/models/SeqProbMVS/0218_013347/checkpoint-epoch3.pth')
     new_state_dict = {}
     for key, val in checkpoint['state_dict'].items():
         new_state_dict[key.replace('module.', '')] = val

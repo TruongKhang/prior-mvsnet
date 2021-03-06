@@ -14,7 +14,7 @@ class DepthNet(nn.Module):
     def __init__(self, in_c):
         super(DepthNet, self).__init__()
         self.regress_cost = nn.Conv3d(in_c, 1, 1)
-        self.unet = nn.Sequential(UNet(5, 32, 1, 3, batchnorms=True),
+        self.unet = nn.Sequential(UNet(5, 32, 1, 3, batchnorms=False),
                                   nn.Sigmoid(), nn.Threshold(0.05, 0.0))
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
@@ -175,8 +175,9 @@ class SeqProbMVSNet(nn.Module):
         mask = (depth.detach() >= min_depth) & (depth.detach() <= max_depth)
         mask = mask.repeat(1, depth_values.size(1), 1, 1)
         log_dist_masked = torch.zeros_like(depth_values)
-        log_dist = - conf * torch.abs(depth - depth_values)
+        log_dist = - conf * torch.abs(depth - depth_values) + torch.log(conf + 1e-16)
         log_dist_masked[mask] = log_dist[mask]
+        log_dist_masked = F.log_softmax(log_dist_masked, dim=1)
         return log_dist_masked
 
     def forward(self, imgs, proj_matrices, depth_values, prior=None, depth_scale=1.0, src_prior=None, gt_vis=None):
@@ -293,14 +294,15 @@ class SeqProbMVSNet(nn.Module):
             depth_stage, var_stage = outputs[stage_name]["depth"].detach(), outputs[stage_name]["var"].detach()
             depth_stage = F.interpolate(depth_stage.unsqueeze(1), [height, width], mode='nearest')
             var_stage = F.interpolate(var_stage.unsqueeze(1), [height, width], mode='nearest')
-            dist = torch.exp(- (depth_stage - final_depth).abs() / (var_stage + 1e-16))
+            dist = torch.exp(- (depth_stage - final_depth).abs() / (var_stage + depth_scale)) * depth_scale / (var_stage + depth_scale)
             total_dist = total_dist + dist
         total_dist /= self.num_stage
         #final_conf, indices = torch.max(total_dist, dim=1, keepdim=True)
         #final_depth = torch.gather(all_depth_samples, dim=1, index=indices)
         final_conf = total_dist
+        outputs["photometric_confidence"] = final_conf.squeeze(1)
         feat_img = features[0]["stage3"].detach()
-        final_depth /= depth_scale
+        final_depth = final_depth / depth_scale
         # depth map refinement
         if self.refine:
             final_depth, final_conf = self.refine_network(final_depth, final_conf, feat_img)

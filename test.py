@@ -193,7 +193,7 @@ def save_depth(testlist, config):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
-    depth_scale_tt = {"Family": 0.0006, "Train": 0.0003, "Playground": 0.001, "Panther": 0.001, "M60": 0.001, "Lighthouse": 0.002, "Horse": 0.00015, "Francis": 0.001}
+    depth_scale_tt = {"Family": 0.0006, "Train": 0.0015, "Playground": 0.003, "Panther": 0.001, "M60": 0.001, "Lighthouse": 0.003, "Horse": 0.0006, "Francis": 0.0015}
 
     with torch.no_grad():
         for batch_idx, sample in enumerate(test_data_loader):
@@ -202,8 +202,8 @@ def save_depth(testlist, config):
             is_begin = sample['is_begin'].type(torch.uint8)
             num_stage = len(config["arch"]["args"]["ndepths"])
 
-            #scene = sample["filename"][0].split('/')[0]
-            depth_scale = 1.0 #depth_scale_tt[scene]
+            scene = sample["filename"][0].split('/')[0]
+            depth_scale = depth_scale_tt[scene]
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
             depths, confs = sample_cuda["prior_depths"]["stage3"], sample_cuda["prior_confs"]["stage3"]  # [B,N,1,H,W]
@@ -294,13 +294,16 @@ class TTDataset(Dataset):
         ref_cam = np.zeros((2, 4, 4), dtype=np.float32)
         ref_cam[0] = ref_extrinsics
         ref_cam[1, :3, :3] = ref_intrinsics
+        ref_cam[1, 3, 3] = 1.0
         # load the reference image
         ref_img = read_img(os.path.join(self.scan_folder, 'images/{:0>8}.jpg'.format(id_ref)))
         ref_img = ref_img.transpose([2, 0, 1])
         # load the estimated depth of the reference view
         ref_depth_est = read_pfm(os.path.join(self.scan_folder, 'depth_est/{:0>8}.pfm'.format(id_ref)))[0]
+        ref_depth_est = np.array(ref_depth_est, dtype=np.float32)
         # load the photometric mask of the reference view
         confidence = read_pfm(os.path.join(self.scan_folder, 'confidence/{:0>8}.pfm'.format(id_ref)))[0]
+        confidence = np.array(confidence, dtype=np.float32)
 
         src_depths, src_cams = [], []
         for ids in id_srcs:
@@ -309,10 +312,11 @@ class TTDataset(Dataset):
             src_proj = np.zeros((2, 4, 4), dtype=np.float32)
             src_proj[0] = src_extrinsics
             src_proj[1, :3, :3] = src_intrinsics
+            src_proj[1, 3, 3] = 1.0
             src_cams.append(src_proj)
             # the estimated depth of the source view
             src_depth_est = read_pfm(os.path.join(self.scan_folder, 'depth_est/{:0>8}.pfm'.format(ids)))[0]
-            src_depths.append(src_depth_est)
+            src_depths.append(np.array(src_depth_est, dtype=np.float32))
         src_depths = np.expand_dims(np.stack(src_depths, axis=0), axis=1)
         src_cams = np.stack(src_cams, axis=0)
         return {"ref_depth": np.expand_dims(ref_depth_est, axis=0),
@@ -327,20 +331,21 @@ class TTDataset(Dataset):
 def filter_depth(pair_folder, scan_folder, out_folder, plyfilename):
     tt_dataset = TTDataset(pair_folder, scan_folder, n_src_views=10)
     sampler = SequentialSampler(tt_dataset)
-    tt_dataloader = DataLoader(tt_dataset, batch_size=1, shuffle=False, sampler=sampler, num_workers=4,
+    tt_dataloader = DataLoader(tt_dataset, batch_size=1, shuffle=False, sampler=sampler, num_workers=2,
                                pin_memory=True, drop_last=False)
     views = {}
 
-    for sample_np in tt_dataloader:
-        if sample_np.get('skip') is not None and np.any(sample_np['skip']): continue
-        sample = {attr: torch.from_numpy(sample_np[attr]).float().cuda() for attr in sample_np if
-                  attr not in ['skip', 'id']}
+    for batch_idx, sample_np in enumerate(tt_dataloader):
+        sample = tocuda(sample_np)
+        #if sample_np.get('skip') is not None and np.any(sample_np['skip']): continue
+        #sample = {attr: torch.from_numpy(sample_np[attr]).float().cuda() for attr in sample_np if
+        #          attr not in ['skip', 'id']}
 
         prob_mask = fusion.prob_filter(sample['ref_conf'], args.conf)
 
         reproj_xyd, in_range = fusion.get_reproj(
             *[sample[attr] for attr in ['ref_depth', 'src_depths', 'ref_cam', 'src_cams']])
-        vis_masks, vis_mask = fusion.vis_filter(sample['ref_depth'], reproj_xyd, in_range, 1, 0.01, args.thres_view)
+        vis_masks, vis_mask = fusion.vis_filter(sample['ref_depth'], reproj_xyd, in_range, 1.0, 0.01, args.thres_view)
 
         ref_depth_ave = fusion.ave_fusion(sample['ref_depth'], reproj_xyd, vis_masks)
 
@@ -350,20 +355,30 @@ def filter_depth(pair_folder, scan_folder, out_folder, plyfilename):
         idx_cam = fusion.idx_img2cam(idx_img, ref_depth_ave, sample['ref_cam'])
         points = fusion.idx_cam2world(idx_cam, sample['ref_cam'])[..., :3, 0].permute(0, 3, 1, 2)
         points_np = points.cpu().data.numpy()
-        mask_np = mask.cpu().data.numpy()
+        mask_np = mask.cpu().data.numpy().astype(np.bool)
+        ref_img = sample_np['ref_img'].data.numpy()
         for i in range(points_np.shape[0]):
+            print(np.sum(np.isnan(points_np[i])))
             p_f_list = [points_np[i, k][mask_np[i, 0]] for k in range(3)]
             p_f = np.stack(p_f_list, -1)
-            c_f_list = [sample_np['ref_img'][i, k][mask_np[i, 0]] for k in range(3)]
-            c_f = np.stack(c_f_list, -1) / 255
-            ref_id = str(sample_np['ref_id'][i])
-            views[ref_id] = (p_f, c_f)
+            c_f_list = [ref_img[i, k][mask_np[i, 0]] for k in range(3)]
+            c_f = np.stack(c_f_list, -1) * 255
+            ref_id = str(sample_np['ref_id'][i].item())
+            views[ref_id] = (p_f, c_f.astype(np.uint8))
+            print("processing {}, ref-view{:0>2}, photo/geo/final-mask:{}/{}/{}".format(scan_folder, int(ref_id), prob_mask[i].float().mean().item(), vis_mask[i].float().mean().item(), mask[i].float().mean().item()))
 
     print('Write combined PCD')
     p_all, c_all = [np.concatenate([v[k] for key, v in views.items()], axis=0) for k in range(2)]
 
-    vertexs = np.array([tuple(v) for v in p_all], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
-    vertex_colors = np.array([tuple(v) for v in c_all], dtype=[('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+    vertexs, vertex_colors = [], []
+    for i in range(len(p_all)):
+        if np.sum(np.isnan(p_all[i])) == 0:
+            vertexs.append(tuple(p_all[i]))
+            vertex_colors.append(tuple(c_all[i]))
+    vertexs = np.array(vertexs, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+    vertex_colors = np.array(vertex_colors, dtype=[('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+    #vertexs = np.array([tuple(v) for v in p_all], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+    #vertex_colors = np.array([tuple(v) for v in c_all], dtype=[('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
 
     vertex_all = np.empty(len(vertexs), vertexs.dtype.descr + vertex_colors.dtype.descr)
     for prop in vertexs.dtype.names:
@@ -425,13 +440,13 @@ if __name__ == '__main__':
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    save_depth(testlist, config)
+    #save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
-    #if args.filter_method != "gipuma":
+    if args.filter_method != "gipuma":
     #     #support multi-processing, the default number of worker is 4
-    #    pcd_filter(testlist, args.num_worker)
-    #else:
-    #    gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
-    #                  args.fusibile_exe_path)
+        pcd_filter(testlist, args.num_worker)
+    else:
+        gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
+                      args.fusibile_exe_path)
 
