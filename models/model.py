@@ -11,14 +11,14 @@ Align_Corners_Range = False
 
 
 class DepthNet(nn.Module):
-    def __init__(self, in_c):
+    def __init__(self, in_channels):
         super(DepthNet, self).__init__()
-        self.regress_cost = nn.Conv3d(in_c, 1, 1)
-        self.unet = nn.Sequential(UNet(5, 32, 1, 3, batchnorms=False),
+        self.regress_cost = nn.ModuleList([nn.Conv3d(in_c, 1, 1) for in_c in in_channels])
+        self.unet = nn.Sequential(UNet(5, 32, 1, 1, batchnorms=False),
                                   nn.Sigmoid(), nn.Threshold(0.05, 0.0))
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
-                log=False, est_vis=None, prior_info=None):
+                log=False, est_vis=None, prior_info=None, stage_idx=0):
 
         assert len(features) == proj_matrices.size(1), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
@@ -34,7 +34,7 @@ class DepthNet(nn.Module):
         ref_volume = ref_feature.unsqueeze(2).repeat(1, 1, num_depth, 1, 1)
         volume_sum = 0.0 #ref_volume
         #volume_sq_sum = ref_volume ** 2
-        # weight_sum = 0.0
+        weight_sum = 0.0
         #del ref_volume
 
         # this is for visibility prediction
@@ -61,11 +61,11 @@ class DepthNet(nn.Module):
             # warped_volume = homo_warping(src_fea, src_proj[:, 2], ref_proj[:, 2], depth_values)
 
             var = (ref_volume - warped_volume) ** 2 # [B, C, D, H, W]
-            if est_vis is None:
+            if stage_idx < 2: #est_vis is None:
                 rel_diff = (ref_depth - src_depths[:, src_idx, ...]).abs() / (ref_depth + 1e-10)
                 # mask = ref_mask # & src_masks[:, src_idx, ...]
 
-                simple_cost_vol = self.regress_cost(var).squeeze(1) #torch.sum(var, dim=1)
+                simple_cost_vol = self.regress_cost[stage_idx](var).squeeze(1) #torch.sum(var, dim=1)
                 max_cost, _ = torch.max(simple_cost_vol, dim=1, keepdim=True)
                 # min_cost, _ = torch.min(simple_cost_vol, dim=1, keepdim=True)
                 mean_cost = torch.mean(simple_cost_vol, dim=1, keepdim=True)
@@ -76,6 +76,7 @@ class DepthNet(nn.Module):
             vis_maps.append(vis_map.detach())
             vis_map = vis_map.unsqueeze(2)
             volume_sum += var * vis_map
+            weight_sum += vis_map
 
             """vis_map = vis_maps[:, src_idx, ...].unsqueeze(2)
 
@@ -91,7 +92,7 @@ class DepthNet(nn.Module):
         # aggregate multiple feature volumes by variance
         # volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
         # volume_variance = volume_sq_sum.div_(weight_sum).sub_(volume_sum.div_(weight_sum).pow_(2))
-        volume_variance = volume_sum / (num_views - 1)
+        volume_variance = volume_sum / (weight_sum + 1e-10) #(num_views - 1)
 
         # step 3. cost volume regularization
         cost_reg = cost_regularization(volume_variance)
@@ -146,7 +147,7 @@ class SeqProbMVSNet(nn.Module):
         if self.refine:
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
-        self.dnet = DepthNet(self.feature.out_channels[0])
+        self.dnet = DepthNet(self.feature.out_channels[:2])
         # self.vis_net = VisNet(self.feature.out_channels[-1], 1)
 
         if use_prior:
@@ -267,7 +268,7 @@ class SeqProbMVSNet(nn.Module):
             log_likelihood, vis_maps = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
                                        cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
-                                       log=True, est_vis=vis_maps, prior_info=(all_prior_depths, all_prior_masks))
+                                       log=True, est_vis=vis_maps, prior_info=(all_prior_depths, all_prior_masks), stage_idx=stage_idx)
 
             log_posterior = log_likelihood + log_prior
             posterior_vol = F.softmax(log_posterior, dim=1)
@@ -294,13 +295,12 @@ class SeqProbMVSNet(nn.Module):
             depth_stage, var_stage = outputs[stage_name]["depth"].detach(), outputs[stage_name]["var"].detach()
             depth_stage = F.interpolate(depth_stage.unsqueeze(1), [height, width], mode='nearest')
             var_stage = F.interpolate(var_stage.unsqueeze(1), [height, width], mode='nearest')
-            dist = torch.exp(- (depth_stage - final_depth).abs() / (var_stage + depth_scale)) * depth_scale / (var_stage + depth_scale)
+            dist = torch.exp(- (depth_stage - final_depth).abs() / (var_stage + depth_scale))  / (var_stage / depth_scale + 1.0)
             total_dist = total_dist + dist
         total_dist /= self.num_stage
         #final_conf, indices = torch.max(total_dist, dim=1, keepdim=True)
         #final_depth = torch.gather(all_depth_samples, dim=1, index=indices)
         final_conf = total_dist
-        outputs["photometric_confidence"] = final_conf.squeeze(1)
         feat_img = features[0]["stage3"].detach()
         final_depth = final_depth / depth_scale
         # depth map refinement

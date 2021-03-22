@@ -406,7 +406,7 @@ class RefineNet(nn.Module):
                                              #Conv2d(32, 32, 3, bn=False, padding=1),
                                              nn.Conv2d(32, 1, 1),
                                              nn.Softplus())"""
-        self.conf_prediction = UNetSP(2, 1, m=8)
+        self.conf_prediction = UNetSP(2, 1, m=4)
 
     def forward(self, depth, conf, feat_img=None):
         inputs = torch.cat((feat_img, depth, conf), dim=1)
