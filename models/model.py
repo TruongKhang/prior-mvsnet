@@ -35,17 +35,7 @@ class DepthNet(nn.Module):
         volume_sum = 0.0 #ref_volume
         #volume_sq_sum = ref_volume ** 2
         weight_sum = 0.0
-        #del ref_volume
 
-        # this is for visibility prediction
-        # if est_vis is not None:
-        #     vis_maps = est_vis
-        #     weight_sum = weight_sum + vis_maps.sum(dim=1, keepdim=True)
-        # else:
-        #     batch_size, height, width = volume_sum.size(0), volume_sum.size(3), volume_sum.size(4)
-        #     vis_maps = torch.ones((batch_size, num_views-1, 1, height, width), dtype=torch.float32,
-        #                           device=volume_sum.device)
-        #     weight_sum = num_views - 1
         depth_info, mask_info = prior_info
         ref_depth, src_depths = depth_info
         ref_mask, src_masks = mask_info
@@ -77,21 +67,8 @@ class DepthNet(nn.Module):
             vis_map = vis_map.unsqueeze(2)
             volume_sum += var * vis_map
             weight_sum += vis_map
-
-            """vis_map = vis_maps[:, src_idx, ...].unsqueeze(2)
-
-            if self.training:
-                volume_sum = volume_sum + warped_volume * vis_map
-                volume_sq_sum = volume_sq_sum + (warped_volume ** 2) * vis_map
-            else:
-                # TODO: this is only a temporal solution to save memory, better way?
-                volume_sum += warped_volume * vis_map
-                volume_sq_sum += warped_volume.pow_(2) * vis_map  # the memory of warped_volume has been modified
-            del warped_volume"""
             
         # aggregate multiple feature volumes by variance
-        # volume_variance = volume_sq_sum.div_(num_views).sub_(volume_sum.div_(num_views).pow_(2))
-        # volume_variance = volume_sq_sum.div_(weight_sum).sub_(volume_sum.div_(weight_sum).pow_(2))
         volume_variance = volume_sum / (weight_sum + 1e-10) #(num_views - 1)
 
         # step 3. cost volume regularization
@@ -201,14 +178,6 @@ class SeqProbMVSNet(nn.Module):
         outputs = {}
         depth, cur_depth = None, None
 
-        # vis_maps_hr = None
-        # if gt_vis is None:
-        #     src_prior_depths, src_prior_confs = src_prior[0]["stage3"][:, 1:, ...], src_prior[1]["stage3"][:, 1:, ...]
-        #     src_projs = proj_matrices["stage3"][:, 1:, ...]
-        #     src_prior_depths, _ = masked_depth_conf(src_prior_depths.squeeze(2), src_prior_confs.squeeze(2), src_projs,
-        #                                             thres_view=1, thres_conf=0.1)
-        #     vis_maps_hr = self.vis_net([feat["stage3"] for feat in features], proj_matrices["stage3"],
-        #                                prior_depths=src_prior_depths.unsqueeze(2), depth_min=dmap_min, depth_max=dmap_max)
         vis_maps = None
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
@@ -232,16 +201,6 @@ class SeqProbMVSNet(nn.Module):
                 vis_maps = F.interpolate(vis_maps.view(-1, 1, vis_maps.size(3), vis_maps.size(4)),
                                          [height // int(stage_scale), width // int(stage_scale)], mode='nearest')
                 vis_maps = vis_maps.view(batch_size, -1, 1, height//int(stage_scale), width//int(stage_scale))
-
-            # if gt_vis is None:
-            #     if stage_idx < self.num_stage - 1:
-            #         v = vis_maps_hr.detach()
-            #     else:
-            #         v = vis_maps_hr
-            #     vis_maps = F.interpolate(v.view(-1, 1, height, width), [height // int(stage_scale), width // int(stage_scale)], mode='nearest')
-            #     vis_maps = vis_maps.view(batch_size, -1, 1, height//int(stage_scale), width//int(stage_scale))
-            # else:
-            #     vis_maps = gt_vis[stage_name]
 
             depth_range_samples = get_depth_range_samples(cur_depth=cur_depth,
                                                         ndepth=self.ndepths[stage_idx],
@@ -281,12 +240,6 @@ class SeqProbMVSNet(nn.Module):
                              "prior_depth": est_prior_depth, "prior_conf": est_prior_conf, "vis_maps": vis_maps}
             outputs[stage_name] = outputs_stage
             outputs.update(outputs_stage)
-            # depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
-
-        # all_depth_samples = get_depth_range_samples(depth_values, depth_values.size(1), depth_interval,
-        #                                             device=imgs[0].device, dtype=imgs[0].dtype,
-        #                                             shape=[batch_size, height, width]) # [B,D,H,W]
-        # all_depth_samples = depth_values_stage
 
         total_dist = 0.0
         final_depth = depth.detach().unsqueeze(1)
@@ -298,8 +251,6 @@ class SeqProbMVSNet(nn.Module):
             dist = torch.exp(- (depth_stage - final_depth).abs() / (var_stage + depth_scale))  / (var_stage / depth_scale + 1.0)
             total_dist = total_dist + dist
         total_dist /= self.num_stage
-        #final_conf, indices = torch.max(total_dist, dim=1, keepdim=True)
-        #final_depth = torch.gather(all_depth_samples, dim=1, index=indices)
         final_conf = total_dist
         feat_img = features[0]["stage3"].detach()
         final_depth = final_depth / depth_scale
