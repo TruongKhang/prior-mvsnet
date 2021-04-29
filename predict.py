@@ -196,7 +196,7 @@ def save_scene_depth(testlist, config):
     # casmvsnet model
     casmvsnet = CascadeMVSNet(ndepths=(48, 32, 8), depth_interals_ratio=(4, 2, 1))
     casmvsnet_ckpt = torch.load('casmvsnet.ckpt')
-    casmvsnet.load_state_dict(casmvsnet_ckpt['net'])
+    casmvsnet.load_state_dict(casmvsnet_ckpt['model'])
 
     # prepare models for testing
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -222,7 +222,7 @@ def save_scene_depth(testlist, config):
                 depths = torch.cat((zero_tensor, prior_depths), dim=1)
                 confs = torch.cat((zero_tensor, prior_confs), dim=1)
                 proj_matrices = torch.cat((cam_params["stage3"][:, [0], ...], prior_proj_matrices), dim=1)
-                prior = get_prior(depths, confs, proj_matrices, depth_scale=depth_scale, thres_view=2, thresh_conf=0.1)
+                prior = get_prior(depths, confs, proj_matrices, depth_scale=depth_scale, thres_view=2, thresh_conf=0.01)
 
                 outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=depth_scale)
             else:
@@ -230,7 +230,7 @@ def save_scene_depth(testlist, config):
                 outputs["final_depth"], outputs["final_conf"] = outputs["depth"], outputs["photometric_confidence"]
                 if prior_queue.size() == (prior_queue.max_size - 1):
                     del casmvsnet
-                    gc.collect()
+                    #gc.collect()
                     casmvsnet = None
             final_depth, final_conf = outputs["final_depth"].unsqueeze(1), outputs["final_conf"].unsqueeze(1)
             prior_queue.update(final_depth, final_conf, cam_params["stage3"][:, 0, ...])
