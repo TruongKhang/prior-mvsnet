@@ -75,14 +75,22 @@ class MVSDataset(Dataset):
                 # viewpoints
                 for view_idx in range(num_viewpoint):
                     ref_view = int(f.readline().rstrip())
-                    src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
+                    if ref_view < (self.nviews - 1):
+                        left = 0
+                    else:
+                        left = ref_view - (self.nviews - 1)
+                    #src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
+                    f.readline()
+                    src_views = [x for x in range(left, left + self.nviews) if x != ref_view]
+                    src_views = src_views[::-1]
 
                     # filter by no src view and fill to nviews
                     if len(src_views) > 0:
-                        if len(src_views) < self.nviews:
-                            print("{}< num_views:{}".format(len(src_views), self.nviews))
-                            src_views += [src_views[0]] * (self.nviews - len(src_views))
-                        src_views = src_views[:(self.nviews-1)]
+                        #if len(src_views) < self.nviews:
+                        #    print("{}< num_views:{}".format(len(src_views), self.nviews))
+                        #    src_views += [src_views[0]] * (self.nviews - len(src_views))
+                        #src_views = src_views[:(self.nviews-1)]
+                        #print(src_views)
                         if scan not in metas:
                             metas[scan] = [(ref_view, src_views)]
                         else:

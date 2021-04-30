@@ -17,7 +17,7 @@ First, get the prior depth from [CasMVSNet](https://github.com/alibaba/cascade-s
 All outputs are saved in a folder `casmvs_outputs` which is placed in the test root folder.
 Then, run our model to predict depth & confidence
 
-    python test.py --dataset general_eval --batch_size 1 --testpath <your test root folder> --testlist <your dataset name> --resume <pretrained model> --outdir outputs --interval_scale 0.8 --num_view 5 --depth_scale 0.001 --max_h 1920 --max_w 1920
+    python test.py --dataset general_eval --batch_size 1 --testpath <your test root folder> --testlist <your dataset name> --resume <pretrained model> --outdir outputs --interval_scale 0.8 --num_view 5 --depth_scale 0.001
 
 Note that you need to change some parameters to fit to your dataset such as `depth_scale`, `num_view`, `max_h`, `max_w`... 
 The depth scale should be in milimeter (minimum depth is around 400mm).

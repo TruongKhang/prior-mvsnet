@@ -194,7 +194,7 @@ def save_scene_depth(testlist, config):
     model.load_state_dict(new_state_dict)
 
     # casmvsnet model
-    casmvsnet = CascadeMVSNet(ndepths=(48, 32, 8), depth_interals_ratio=(4, 2, 1))
+    casmvsnet = CascadeMVSNet(ndepths=(80, 32, 8), depth_interals_ratio=(4, 2, 1))
     casmvsnet_ckpt = torch.load('casmvsnet.ckpt')
     casmvsnet.load_state_dict(casmvsnet_ckpt['model'])
 
@@ -464,13 +464,13 @@ if __name__ == '__main__':
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    save_depth(testlist, config)
+    # save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
-    # if args.filter_method != "gipuma":
+    if args.filter_method != "gipuma":
     # #     #support multi-processing, the default number of worker is 4
-    #     pcd_filter(testlist, args.num_worker)
-    # else:
-    #     gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
-    #                   args.fusibile_exe_path)
+        pcd_filter(testlist, args.num_worker)
+    else:
+        gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
+                      args.fusibile_exe_path)
 
