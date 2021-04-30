@@ -14,8 +14,10 @@ from datasets.data_io import read_pfm, save_pfm
 from plyfile import PlyData, PlyElement
 from gipuma import gipuma_filter
 from utils import tocuda, print_args, generate_pointcloud, tensor2numpy
-from models.utils.warping import homo_warping_2D, masked_depth_conf, get_prior
+from models.utils.warping import get_prior
 import fusion
+from models import CascadeMVSNet
+from models.utils.prior import PriorQueue
 
 from multiprocessing import Pool
 from functools import partial
@@ -161,10 +163,11 @@ def save_depth(testlist, config):
 def save_scene_depth(testlist, config):
     # dataset, dataloader
 
+    global casmvsnet
     init_kwags = {
         "data_path": args.testpath,
         "data_list": testlist,
-        "mode": "test",
+        "mode": "predict",
         "num_srcs": args.num_view,
         "num_depths": args.numdepth,
         "interval_scale": Interval_Scale,
@@ -190,29 +193,48 @@ def save_scene_depth(testlist, config):
         model = torch.nn.DataParallel(model)
     model.load_state_dict(new_state_dict)
 
+    # casmvsnet model
+    casmvsnet = CascadeMVSNet(ndepths=(80, 32, 8), depth_interals_ratio=(4, 2, 1))
+    casmvsnet_ckpt = torch.load('casmvsnet.ckpt')
+    casmvsnet.load_state_dict(casmvsnet_ckpt['model'])
+
     # prepare models for testing
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
-    # depth_scale_tt = {"Family": 0.0006, "Train": 0.0015, "Playground": 0.003, "Panther": 0.001, "M60": 0.001, "Lighthouse": 0.003, "Horse": 0.0006, "Francis": 0.0015}
+    # casmvsnet model
+    casmvsnet = casmvsnet.to(device)
+    casmvsnet.eval()
+
+    prior_queue = PriorQueue(max_size=(args.num_view - 1))
     depth_scale = args.depth_scale
 
     with torch.no_grad():
         for batch_idx, sample in enumerate(test_data_loader):
-            start_time = time.time()
             sample_cuda = tocuda(sample)
-            is_begin = sample['is_begin'].type(torch.uint8)
             num_stage = len(config["arch"]["args"]["ndepths"])
 
-            # scene = sample["filename"][0].split('/')[0]
-            # depth_scale = depth_scale_tt[scene]
-
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
-            depths, confs = sample_cuda["prior_depths"]["stage3"], sample_cuda["prior_confs"]["stage3"]  # [B,N,1,H,W]
-            prior = get_prior(depths, confs, cam_params["stage3"], depth_scale=depth_scale, thres_view=2, thresh_conf=0.1)
+            start_time = time.time()
+            if prior_queue.is_full():
+                prior_depths, prior_confs, prior_proj_matrices = prior_queue.get()
+                zero_tensor = torch.zeros_like(prior_depths[:, [0], ...])
+                depths = torch.cat((zero_tensor, prior_depths), dim=1)
+                confs = torch.cat((zero_tensor, prior_confs), dim=1)
+                proj_matrices = torch.cat((cam_params["stage3"][:, [0], ...], prior_proj_matrices), dim=1)
+                prior = get_prior(depths, confs, proj_matrices, depth_scale=depth_scale, thres_view=2, thresh_conf=0.01)
 
-            outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
-                            depth_scale=depth_scale, src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))
+                outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=depth_scale)
+            else:
+                outputs = casmvsnet(imgs, cam_params, sample_cuda["depth_values"])
+                outputs["final_depth"], outputs["final_conf"] = outputs["depth"], outputs["photometric_confidence"]
+                if prior_queue.size() == (prior_queue.max_size - 1):
+                    del casmvsnet
+                    #gc.collect()
+                    casmvsnet = None
+            final_depth, final_conf = outputs["final_depth"].unsqueeze(1), outputs["final_conf"].unsqueeze(1)
+            prior_queue.update(final_depth, final_conf, cam_params["stage3"][:, 0, ...])
+
             end_time = time.time()
             outputs = tensor2numpy(outputs)
             del sample_cuda
@@ -433,25 +455,22 @@ if __name__ == '__main__':
     config = ConfigParser.from_args(parser)
 
     if args.testlist != "all":
-        if os.path.exists(args.testlist):
-            with open(args.testlist) as f:
-                content = f.readlines()
-                testlist = [line.rstrip() for line in content]
-        else:
-            testlist = [args.testlist]
+        with open(args.testlist) as f:
+            content = f.readlines()
+            testlist = [line.rstrip() for line in content]
     else:
         #for tanks & temples or eth3d or colmap
         testlist = [e for e in os.listdir(args.testpath) if os.path.isdir(os.path.join(args.testpath, e)) and ('input' not in e)] \
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    save_depth(testlist, config)
+    # save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
-    # if args.filter_method != "gipuma":
+    if args.filter_method != "gipuma":
     # #     #support multi-processing, the default number of worker is 4
-    #     pcd_filter(testlist, args.num_worker)
-    # else:
-    #     gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
-    #                   args.fusibile_exe_path)
+        pcd_filter(testlist, args.num_worker)
+    else:
+        gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
+                      args.fusibile_exe_path)
 

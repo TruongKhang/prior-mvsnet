@@ -17,20 +17,8 @@ def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
         mask = mask_ms[stage_key]
         mask = mask > 0.5
 
-        if stage_key == "stage3":
-            conf = stage_inputs["photometric_confidence"]
-            prob_loss, depth_loss = masked_prob_loss(depth_est, conf, (depth_gt, mask))
-        else:
-            depth_loss = F.smooth_l1_loss(depth_est[mask], depth_gt[mask], reduction='mean')
-            prob_loss = depth_loss
-
-        if "mvs_depth" in stage_inputs:
-            mvs_depth = stage_inputs["mvs_depth"]
-            mvs_depth_loss = F.smooth_l1_loss(mvs_depth[mask], depth_gt[mask], reduction='mean')
-        else:
-            mvs_depth_loss = 0.0
-
-        if use_prior and ("prior_depth" in stage_inputs):
+        depth_loss = F.smooth_l1_loss(depth_est[mask], depth_gt[mask], reduction='mean')
+        if use_prior:
             scaled_depth_gt = depth_gt.unsqueeze(1) / depth_scale
             target = (scaled_depth_gt, mask.unsqueeze(1))
             prior_loss, _ = masked_prob_loss(stage_inputs["prior_depth"], stage_inputs["prior_conf"], target)
@@ -39,9 +27,13 @@ def seq_prob_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
 
         if depth_loss_weights is not None:
             stage_idx = int(stage_key.replace("stage", "")) - 1
-            total_loss = total_loss + depth_loss_weights[stage_idx] * (prob_loss + prior_loss + mvs_depth_loss)
+            total_loss = total_loss + depth_loss_weights[stage_idx] * (depth_loss + prior_loss)
         else:
-            total_loss += 1.0 * (prob_loss + prior_loss + mvs_depth_loss)
+            total_loss += 1.0 * (depth_loss + prior_loss)
+
+    final_loss, depth_loss = masked_prob_loss(inputs["final_depth"], inputs["final_conf"],
+                                              (depth_gt_ms["stage3"], mask_ms["stage3"] > 0.5))
+    total_loss = total_loss + final_loss
 
     return total_loss, depth_loss
 

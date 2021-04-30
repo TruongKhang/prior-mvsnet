@@ -2,11 +2,13 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .prior_net import ResidualBlock, UNetSP, UNet
+from torch.distributions import Normal, Independent, kl
 import time
 import sys
 sys.path.append("..")
 # from utils import local_pcd
+
+from .prior_net import UNetSP
 
 
 def init_bn(module):
@@ -390,34 +392,31 @@ class CostRegNet(nn.Module):
 class RefineNet(nn.Module):
     def __init__(self, in_c):
         super(RefineNet, self).__init__()
-        self.feature_extractor = nn.Sequential(Conv2d(in_c, 64, 3, bn=False, padding=1), #UNet(3, 32, 32, 3, batchnorms=False)
+        self.feature_extractor = nn.Sequential(Conv2d(in_c, 64, 3, bn=False, padding=1),
                                                Conv2d(64, 32, 3, bn=False, padding=1),
-                                               Conv2d(32, 32, 3, bn=False, padding=1),
+                                               #Conv2d(32, 32, 3, bn=False, padding=1),
                                                #Conv2d(32, 32, 3, bn=False, padding=1),
                                                Conv2d(32, 32, 3, bn=False, padding=1))
         self.depth_prediction = nn.Sequential(Conv2d(32, 32, 3, bn=False, padding=1),
-                                              Conv2d(32, 32, 3, bn=False, padding=1),
-                                              #Conv2d(32, 32, 3, bn=False, padding=1),
+                                              # Conv2d(32, 32, 3, bn=False, padding=1),
+                                              # Conv2d(32, 32, 3, bn=False, padding=1),
                                               nn.Conv2d(32, 1, 1))
-        self.conf_prediction = nn.Sequential(Conv2d(33, 64, 3, bn=False, padding=1),
+        """self.conf_prediction = nn.Sequential(Conv2d(34, 64, 3, bn=False, padding=1),
                                              Conv2d(64, 32, 3, bn=False, padding=1),
                                              #Conv2d(32, 32, 3, bn=False, padding=1),
                                              nn.Conv2d(32, 1, 1),
-                                             nn.Softplus())
+                                             nn.Softplus())"""
+        self.conf_prediction = UNetSP(2, 1, m=4)
 
-    def forward(self, init_depth, stage_idx, prior, feat_img=None):
-        prior_depth, prior_conf = prior
-        inputs = torch.cat((feat_img, prior_depth, init_depth, prior_depth - init_depth, prior_conf), dim=1)
+    def forward(self, depth, conf, feat_img=None):
+        inputs = torch.cat((feat_img, depth, conf), dim=1)
         latent_feat = self.feature_extractor(inputs)
 
         depth_residual = self.depth_prediction(latent_feat)
-        final_depth = init_depth + depth_residual
-        final_conf = None
-        if stage_idx == 2:
-            input_feat = torch.cat((latent_feat, depth_residual), dim=1).detach()
-            final_conf = self.conf_prediction(input_feat)
-            final_conf = final_conf.squeeze(1)
-        return final_depth.squeeze(1), final_conf
+        final_depth = depth + depth_residual
+        input_feat = torch.cat((depth_residual, conf), dim=1).detach()
+        final_conf = self.conf_prediction(input_feat)
+        return final_depth.squeeze(1), final_conf.squeeze(1)
 
 
 def depth_regression(p, depth_values):
@@ -429,17 +428,16 @@ def depth_regression(p, depth_values):
     return depth
 
 
-def conf_regression(p, n=4):
+def conf_regression(p):
     ndepths = p.size(1)
     with torch.no_grad():
         # photometric confidence
-        prob_volume_sum4 = n * F.avg_pool3d(F.pad(p.unsqueeze(1), pad=[0, 0, 0, 0, n//2 - 1, n//2]),
-                                            (n, 1, 1), stride=1, padding=0).squeeze(1)
+        prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(p.unsqueeze(1), pad=[0, 0, 0, 0, 0, 1]),
+                                            (2, 1, 1), stride=1, padding=0).squeeze(1)
         depth_index = depth_regression(p.detach(), depth_values=torch.arange(ndepths, device=p.device, dtype=torch.float)).long()
         depth_index = depth_index.clamp(min=0, max=ndepths - 1)
         conf = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1))
     return conf.squeeze(1)
-
 
 
 def get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, max_depth=192.0, min_depth=0.0):
@@ -461,7 +459,7 @@ def get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, m
                                                                   requires_grad=False).reshape(1, -1, 1,
                                                                                                1) * new_interval.unsqueeze(1))
 
-    return depth_range_samples.clamp(min=min_depth, max=max_depth)
+    return depth_range_samples #.clamp(min=min_depth, max=max_depth)
 
 
 def get_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, device, dtype, shape,

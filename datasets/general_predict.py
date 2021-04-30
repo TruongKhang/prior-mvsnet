@@ -6,6 +6,8 @@ import random
 from datasets.data_io import *
 
 s_h, s_w = 0, 0
+
+
 class MVSDataset(Dataset):
     def __init__(self, datapath, listfile, mode, nviews, ndepths=192, interval_scale=1.06, **kwargs):
         super(MVSDataset, self).__init__()
@@ -20,7 +22,7 @@ class MVSDataset(Dataset):
         self.fix_wh = False
         self.kwargs = kwargs
 
-        assert self.mode == "test"
+        assert self.mode == "predict"
         self.metas = self.build_list()
 
         self.generate_img_index = []
@@ -73,14 +75,22 @@ class MVSDataset(Dataset):
                 # viewpoints
                 for view_idx in range(num_viewpoint):
                     ref_view = int(f.readline().rstrip())
-                    src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
+                    if ref_view < (self.nviews - 1):
+                        left = 0
+                    else:
+                        left = ref_view - (self.nviews - 1)
+                    #src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
+                    f.readline()
+                    src_views = [x for x in range(left, left + self.nviews) if x != ref_view]
+                    src_views = src_views[::-1]
 
                     # filter by no src view and fill to nviews
                     if len(src_views) > 0:
-                        if len(src_views) < self.nviews:
-                            print("{}< num_views:{}".format(len(src_views), self.nviews))
-                            src_views += [src_views[0]] * (self.nviews - len(src_views))
-                        src_views = src_views[:(self.nviews-1)]
+                        #if len(src_views) < self.nviews:
+                        #    print("{}< num_views:{}".format(len(src_views), self.nviews))
+                        #    src_views += [src_views[0]] * (self.nviews - len(src_views))
+                        #src_views = src_views[:(self.nviews-1)]
+                        #print(src_views)
                         if scan not in metas:
                             metas[scan] = [(ref_view, src_views)]
                         else:
@@ -202,8 +212,6 @@ class MVSDataset(Dataset):
         imgs = []
         depth_values = None
         proj_matrices = []
-        input_depths = {"stage1": [], "stage2": [], "stage3": []}
-        input_confs = {"stage1": [], "stage2": [], "stage3": []}
         for i, vid in enumerate(view_ids):
             img_filename = os.path.join(self.datapath, '{}/images_post/{:0>8}.jpg'.format(scan, vid))
             if not os.path.exists(img_filename):
@@ -248,23 +256,6 @@ class MVSDataset(Dataset):
                 depth_values = np.arange(depth_min, depth_interval * (self.ndepths - 0.5) + depth_min, depth_interval,
                                          dtype=np.float32)
 
-            #for stage in ["stage1", "stage2", "stage3"]:
-            stage = "stage3"
-            #mask_file = os.path.join(self.datapath, 'inputs/{}/{}/mask/{:0>8}_final.png'.format(stage, scan, vid))
-            #mask_prior = np.array(Image.open(mask_file), dtype=np.float32) / 255
-            #mask_prior = (mask_prior > 0.5).astype(np.float32)
-            in_depth_file = os.path.join(self.datapath, 'casmvs_outputs/{}/{}/depth_est/{:0>8}.pfm'.format(stage, scan, vid))
-            in_depth = np.array(read_pfm(in_depth_file)[0], dtype=np.float32) #* mask_prior
-            in_conf_file = os.path.join(self.datapath, 'casmvs_outputs/{}/{}/confidence/{:0>8}.pfm'.format(stage, scan, vid))
-            in_conf = np.array(read_pfm(in_conf_file)[0], dtype=np.float32) #* mask_prior
-            height, width = in_depth.shape
-            input_depths["stage1"].append(cv2.resize(in_depth, (width//4, height//4), interpolation=cv2.INTER_NEAREST))
-            input_depths["stage2"].append(cv2.resize(in_depth, (width//2, height//2), interpolation=cv2.INTER_NEAREST))
-            input_depths["stage3"].append(in_depth)
-            input_confs["stage1"].append(cv2.resize(in_conf, (width//4, height//4), interpolation=cv2.INTER_NEAREST))
-            input_confs["stage2"].append(cv2.resize(in_conf, (width//2, height//2), interpolation=cv2.INTER_NEAREST))
-            input_confs["stage3"].append(in_conf)
-
         #all
         imgs = np.stack(imgs).transpose([0, 3, 1, 2])
         proj_matrices = np.stack(proj_matrices)
@@ -279,14 +270,9 @@ class MVSDataset(Dataset):
             "stage2": stage2_pjmats,
             "stage3": stage3_pjmats
         }
-        for stage in input_depths.keys():
-            input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
-            input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
 
         return {"imgs": imgs,
                 "proj_matrices": proj_matrices_ms,
                 "depth_values": depth_values,
                 "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}",
-                "is_begin": self.list_begin[idx],
-                "prior_depths": input_depths,
-                "prior_confs": input_confs}
+                "is_begin": self.list_begin[idx]}

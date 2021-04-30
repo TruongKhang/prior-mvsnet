@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
 
-from datasets import dtu_yao, general_eval
+from datasets import dtu_yao, general_eval, general_predict
 
 np.random.seed(1234)
 
@@ -15,6 +15,10 @@ class DTULoader(DataLoader):
         if (mode == 'train') or (mode == 'val'):
             self.mvs_dataset = dtu_yao.MVSDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
                                                   shuffle=shuffle, seq_size=seq_size, batch_size=batch_size)
+        elif mode == 'predict':
+            self.mvs_dataset = general_predict.MVSDataset(data_path, data_list, mode, num_srcs, num_depths,
+                                                          interval_scale, shuffle=shuffle, seq_size=seq_size,
+                                                          batch_size=batch_size, max_h=max_h, max_w=max_w, fix_res=fix_res)
         else:
             self.mvs_dataset = general_eval.MVSDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
                                                        shuffle=shuffle, seq_size=seq_size, batch_size=batch_size,
