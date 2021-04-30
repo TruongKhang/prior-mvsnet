@@ -52,6 +52,7 @@ parser.add_argument('--num_view', type=int, default=3, help='num of view')
 parser.add_argument('--max_h', type=int, default=864, help='testing max h')
 parser.add_argument('--max_w', type=int, default=1152, help='testing max w')
 parser.add_argument('--fix_res', action='store_true', help='scene all using same res')
+parser.add_argument('--depth_scale', type=float, default=1.0,  help='scene all using same res')
 
 parser.add_argument('--num_worker', type=int, default=4, help='depth_filer worker')
 parser.add_argument('--save_freq', type=int, default=20, help='save freq of local pcd')

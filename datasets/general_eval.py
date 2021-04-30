@@ -253,9 +253,9 @@ class MVSDataset(Dataset):
             #mask_file = os.path.join(self.datapath, 'inputs/{}/{}/mask/{:0>8}_final.png'.format(stage, scan, vid))
             #mask_prior = np.array(Image.open(mask_file), dtype=np.float32) / 255
             #mask_prior = (mask_prior > 0.5).astype(np.float32)
-            in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>8}.pfm'.format(stage, scan, vid))
+            in_depth_file = os.path.join(self.datapath, 'casmvs_outputs/{}/{}/depth_est/{:0>8}.pfm'.format(stage, scan, vid))
             in_depth = np.array(read_pfm(in_depth_file)[0], dtype=np.float32) #* mask_prior
-            in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>8}.pfm'.format(stage, scan, vid))
+            in_conf_file = os.path.join(self.datapath, 'casmvs_outputs/{}/{}/confidence/{:0>8}.pfm'.format(stage, scan, vid))
             in_conf = np.array(read_pfm(in_conf_file)[0], dtype=np.float32) #* mask_prior
             height, width = in_depth.shape
             input_depths["stage1"].append(cv2.resize(in_depth, (width//4, height//4), interpolation=cv2.INTER_NEAREST))
