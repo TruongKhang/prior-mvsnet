@@ -151,13 +151,13 @@ def write_cam(file, cam):
     f.close()
 
 
-# def save_depth(testlist, config):
-#     for scene in testlist:
-#         save_scene_depth([scene], config)
+def save_depth(testlist, config):
+    for scene in testlist:
+        save_scene_depth([scene], config)
 
 
 # run CasMVS model to save depth maps and confidence maps
-def save_depth(testlist, config):
+def save_scene_depth(testlist, config):
     # dataset, dataloader
 
     init_kwags = {
@@ -193,7 +193,8 @@ def save_depth(testlist, config):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     model.eval()
-    depth_scale_tt = {"Family": 0.0006, "Train": 0.0015, "Playground": 0.003, "Panther": 0.001, "M60": 0.001, "Lighthouse": 0.003, "Horse": 0.0006, "Francis": 0.0015}
+    # depth_scale_tt = {"Family": 0.0006, "Train": 0.0015, "Playground": 0.003, "Panther": 0.001, "M60": 0.001, "Lighthouse": 0.003, "Horse": 0.0006, "Francis": 0.0015}
+    depth_scale = args.depth_scale
 
     with torch.no_grad():
         for batch_idx, sample in enumerate(test_data_loader):
@@ -202,8 +203,8 @@ def save_depth(testlist, config):
             is_begin = sample['is_begin'].type(torch.uint8)
             num_stage = len(config["arch"]["args"]["ndepths"])
 
-            scene = sample["filename"][0].split('/')[0]
-            depth_scale = depth_scale_tt[scene]
+            # scene = sample["filename"][0].split('/')[0]
+            # depth_scale = depth_scale_tt[scene]
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
             depths, confs = sample_cuda["prior_depths"]["stage3"], sample_cuda["prior_confs"]["stage3"]  # [B,N,1,H,W]
@@ -431,22 +432,25 @@ if __name__ == '__main__':
     config = ConfigParser.from_args(parser)
 
     if args.testlist != "all":
-        with open(args.testlist) as f:
-            content = f.readlines()
-            testlist = [line.rstrip() for line in content]
+        if os.path.exists(args.testlist):
+            with open(args.testlist) as f:
+                content = f.readlines()
+                testlist = [line.rstrip() for line in content]
+        else:
+            testlist = [args.testlist]
     else:
         #for tanks & temples or eth3d or colmap
         testlist = [e for e in os.listdir(args.testpath) if os.path.isdir(os.path.join(args.testpath, e)) and ('input' not in e)] \
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    #save_depth(testlist, config)
+    save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
-    if args.filter_method != "gipuma":
-    #     #support multi-processing, the default number of worker is 4
-        pcd_filter(testlist, args.num_worker)
-    else:
-        gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
-                      args.fusibile_exe_path)
+    # if args.filter_method != "gipuma":
+    # #     #support multi-processing, the default number of worker is 4
+    #     pcd_filter(testlist, args.num_worker)
+    # else:
+    #     gipuma_filter(testlist, args.outdir, args.prob_threshold, args.disp_threshold, args.num_consistent,
+    #                   args.fusibile_exe_path)
 

@@ -75,6 +75,17 @@ class MVSDataset(Dataset):
                     ref_view = int(f.readline().rstrip())
                     src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
 
+                    # uncommet this to evaluate on tanks tand temples
+                    """if ref_view < (self.nviews - 1):
+                        left = 0
+                    else:
+                        left = ref_view - (self.nviews - 1)
+                    if (left + self.nviews) > num_viewpoint:
+                        left = num_viewpoint - self.nviews
+                    f.readline() # ignore the given source views
+                    src_views = [x for x in range(left, left+self.nviews) if x != ref_view]
+                    src_views = src_views[::-1]"""
+
                     # filter by no src view and fill to nviews
                     if len(src_views) > 0:
                         if len(src_views) < self.nviews:
@@ -126,6 +137,20 @@ class MVSDataset(Dataset):
     def read_depth(self, filename):
         # read pfm depth file
         return np.array(read_pfm(filename)[0], dtype=np.float32)
+
+    def read_mask_hr(self, filename):
+        img = Image.open(filename)
+        np_img = np.array(img, dtype=np.float32)
+        np_img = (np_img > 10).astype(np.float32)
+        np_img = cv2.resize(np_img, (1152, 864), interpolation=cv2.INTER_NEAREST)
+
+        h, w = np_img.shape
+        np_img_ms = {
+            "stage1": cv2.resize(np_img, (w//4, h//4), interpolation=cv2.INTER_NEAREST),
+            "stage2": cv2.resize(np_img, (w//2, h//2), interpolation=cv2.INTER_NEAREST),
+            "stage3": np_img,
+        }
+        return np_img_ms
 
     def scale_mvs_input(self, img, intrinsics, max_w, max_h, base=32):
         h, w = img.shape[:2]
@@ -248,15 +273,11 @@ class MVSDataset(Dataset):
                 depth_values = np.arange(depth_min, depth_interval * (self.ndepths - 0.5) + depth_min, depth_interval,
                                          dtype=np.float32)
 
-            #for stage in ["stage1", "stage2", "stage3"]:
             stage = "stage3"
-            #mask_file = os.path.join(self.datapath, 'inputs/{}/{}/mask/{:0>8}_final.png'.format(stage, scan, vid))
-            #mask_prior = np.array(Image.open(mask_file), dtype=np.float32) / 255
-            #mask_prior = (mask_prior > 0.5).astype(np.float32)
-            in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>8}.pfm'.format(stage, scan, vid))
-            in_depth = np.array(read_pfm(in_depth_file)[0], dtype=np.float32) #* mask_prior
-            in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>8}.pfm'.format(stage, scan, vid))
-            in_conf = np.array(read_pfm(in_conf_file)[0], dtype=np.float32) #* mask_prior
+            in_depth_file = os.path.join(self.datapath, 'inputs/{}/{}/depth_est/{:0>8}.png'.format(stage, scan, vid))
+            in_depth = np.array(Image.open(in_depth_file), dtype=np.float32) / 10
+            in_conf_file = os.path.join(self.datapath, 'inputs/{}/{}/confidence/{:0>8}.png'.format(stage, scan, vid))
+            in_conf = np.array(Image.open(in_conf_file), dtype=np.float32) / 255
             height, width = in_depth.shape
             input_depths["stage1"].append(cv2.resize(in_depth, (width//4, height//4), interpolation=cv2.INTER_NEAREST))
             input_depths["stage2"].append(cv2.resize(in_depth, (width//2, height//2), interpolation=cv2.INTER_NEAREST))
