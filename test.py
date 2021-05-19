@@ -209,7 +209,7 @@ def save_scene_depth(testlist, config):
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
             depths, confs = sample_cuda["prior_depths"]["stage3"], sample_cuda["prior_confs"]["stage3"]  # [B,N,1,H,W]
-            prior = get_prior(depths, confs, cam_params["stage3"], depth_scale=depth_scale, thres_view=2, thresh_conf=0.1)
+            prior = get_prior(depths, confs, cam_params["stage3"], depth_scale=depth_scale, thres_view=1, thresh_conf=0.1)
 
             outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior,
                             depth_scale=depth_scale, src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]))

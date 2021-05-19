@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from .module import depth_regression, conf_regression, CostRegNet, FeatureNet, RefineNet, get_depth_range_samples
 from .utils.warping import homo_warping_3D, homo_warping_2D, masked_depth_conf
 from .prior_net import PriorNet, UNet
-from .visibility import VisNet
 
 
 Align_Corners_Range = False
@@ -125,7 +124,6 @@ class SeqProbMVSNet(nn.Module):
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
         self.dnet = DepthNet(self.feature.out_channels[:2])
-        # self.vis_net = VisNet(self.feature.out_channels[-1], 1)
 
         if use_prior:
             self.pr_net = PriorNet()
