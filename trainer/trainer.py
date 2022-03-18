@@ -6,7 +6,6 @@ import time
 
 from base import BaseTrainer
 from utils import AbsDepthError_metrics, Thres_metrics, tocuda, DictAverageMeter, inf_loop, tensor2float, tensor2numpy, save_images
-from .data_structure import PriorState
 from models.utils.warping import homo_warping_2D, get_prior
 
 
@@ -46,14 +45,12 @@ class Trainer(BaseTrainer):
         print('Epoch {}:'.format(epoch))
 
         self.data_loader.dataset.generate_indices()
-        prior_state = PriorState(max_size=4)
         # training
         for batch_idx, sample in enumerate(self.data_loader):
             start_time = time.time()
 
             # modified from the original by Khang
             sample_cuda = tocuda(sample)
-            is_begin = sample_cuda['is_begin'].type(torch.uint8)
             depth_gt_ms = sample_cuda["depth"]
             mask_ms = sample_cuda["mask"]
             num_stage = len(self.config["arch"]["args"]["ndepths"])
@@ -62,28 +59,17 @@ class Trainer(BaseTrainer):
 
             imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
 
-            if is_begin.sum() < len(is_begin):
-                prior_state.reset()
             prior = None
             if self.use_prior:
-                prior = {}
-                if self.config["dataset_name"] == 'dtu':
-                    depths, confs, masks = sample_cuda["prior_depths"], sample_cuda["prior_confs"], sample_cuda["prior_masks"] # [B,N,1,H,W]
-                    # all_gt_depths = sample_cuda["gt_depths"]
-                    # for stage in cam_params.keys():
-                    #     cam_params_stage = cam_params[stage]
-                    #     # m = (masks[stage] > 0.5).float()
-                    #     warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
-                    #     prior[stage] = warped_depths / self.depth_scale, warped_confs
-                    prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"], depth_scale=self.depth_scale)
-                else:
-                    if prior_state.size() == 4:
-                        depths, confs, proj_matrices = prior_state.get()
-                        for stage in depths.keys():
-                            warped_depths, warped_confs = homo_warping_2D(depths, confs, proj_matrices, ref_proj=cam_params)
-                            prior[stage] = warped_depths / self.depth_scale, warped_confs
-                    else:
-                        prior = None
+                depths, confs, masks = sample_cuda["prior_depths"], sample_cuda["prior_confs"], sample_cuda[
+                    "prior_masks"]  # [B,N,1,H,W]
+                # all_gt_depths = sample_cuda["gt_depths"]
+                # for stage in cam_params.keys():
+                #     cam_params_stage = cam_params[stage]
+                #     # m = (masks[stage] > 0.5).float()
+                #     warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
+                #     prior[stage] = warped_depths / self.depth_scale, warped_confs
+                prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"], depth_scale=self.depth_scale)
 
             # self.optimizer.zero_grad()
             for otm in self.optimizer:
@@ -98,13 +84,6 @@ class Trainer(BaseTrainer):
             for otm in self.optimizer:
                 otm.step()
             self.lr_scheduler["mvsnet"].step()
-            if self.config["dataset_name"] != 'dtu':
-                depth_est, conf_est = {}, {}
-                for i in range(num_stage):
-                    stage = "stage%d" % (i+1)
-                    depth_est[stage] = outputs[stage]["depth"].detach()
-                    conf_est[stage] = outputs[stage]["photometric_confidence"].detach()
-                prior_state.update(depth_est, conf_est, cam_params)
 
             # scalar_outputs = {"loss": loss,
             #                   "depth_loss": depth_loss,
@@ -156,14 +135,12 @@ class Trainer(BaseTrainer):
         #         os.makedirs(path_cfd)
 
         self.model.eval()
-        prior_state = PriorState(max_size=4)
         with torch.no_grad():
             for batch_idx, sample in enumerate(self.valid_data_loader):
                 start_time = time.time()
 
                 # modified from the original by Khang
                 sample_cuda = tocuda(sample)
-                is_begin = sample['is_begin'].type(torch.uint8)
                 depth_gt_ms = sample_cuda["depth"]
                 mask_ms = sample_cuda["mask"]
                 num_stage = len(self.config["arch"]["args"]["ndepths"])
@@ -171,31 +148,18 @@ class Trainer(BaseTrainer):
                 mask = mask_ms["stage{}".format(num_stage)]
 
                 imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
-                if is_begin.sum() < len(is_begin):
-                    prior_state.reset()
                 prior = None
                 if self.use_prior:
-                    prior = {}
-                    if self.config["dataset_name"] == 'dtu':
-                        depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
-                        # all_gt_depths = sample_cuda["gt_depths"]
-                        # masks = sample_cuda["prior_masks"]
-                        # for stage in cam_params.keys():
-                        #     cam_params_stage = cam_params[stage]
-                        #     m = (masks[stage] > 0.5).float()
-                        #     warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
-                        #     prior[stage] = warped_depths / self.depth_scale, warped_confs
-                        prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"],
-                                          depth_scale=self.depth_scale)
-                    else:
-                        if prior_state.size() == 4:
-                            depths, confs, proj_matrices = prior_state.get()
-                            for stage in depths.keys():
-                                warped_depths, warped_confs = homo_warping_2D(depths, confs, proj_matrices,
-                                                                              ref_proj=cam_params)
-                                prior[stage] = warped_depths / self.depth_scale, warped_confs
-                        else:
-                            prior = None
+                    depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
+                    # all_gt_depths = sample_cuda["gt_depths"]
+                    # masks = sample_cuda["prior_masks"]
+                    # for stage in cam_params.keys():
+                    #     cam_params_stage = cam_params[stage]
+                    #     m = (masks[stage] > 0.5).float()
+                    #     warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
+                    #     prior[stage] = warped_depths / self.depth_scale, warped_confs
+                    prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"],
+                                      depth_scale=self.depth_scale)
 
                 outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
                                      src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]), gt_vis=None)
@@ -203,14 +167,6 @@ class Trainer(BaseTrainer):
                 loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms,
                                                   dlossw=self.config["trainer"]["dlossw"],
                                                   use_prior=self.use_prior)
-
-                if self.config["dataset_name"] != 'dtu':
-                    depth_est, conf_est = {}, {}
-                    for i in range(num_stage):
-                        stage = "stage%d" % (i + 1)
-                        depth_est[stage] = outputs[stage]["depth"].detach()
-                        conf_est[stage] = outputs[stage]["photometric_confidence"].detach()
-                    prior_state.update(depth_est, conf_est, cam_params)
 
                 depth_est = outputs["final_depth"].detach()
                 mvs_depth = outputs["depth"].detach()

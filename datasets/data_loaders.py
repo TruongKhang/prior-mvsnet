@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
 
-from datasets import dtu_yao, general_eval, general_predict
+from datasets import DTUDataset, BlendedMVSDataset, MVSDataset
 
 np.random.seed(1234)
 
@@ -11,30 +11,43 @@ np.random.seed(1234)
 class DTULoader(DataLoader):
 
     def __init__(self, data_path, data_list, mode, num_srcs, num_depths, interval_scale=1.0,
-                 shuffle=True, seq_size=49, batch_size=1, fix_res=False, max_h=None, max_w=None):
+                 shuffle=True, batch_size=1, num_stages=3, load_prior=True, fix_res=False, max_h=None, max_w=None):
         if (mode == 'train') or (mode == 'val'):
-            self.mvs_dataset = dtu_yao.MVSDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
-                                                  shuffle=shuffle, seq_size=seq_size, batch_size=batch_size)
-        elif mode == 'predict':
-            self.mvs_dataset = general_predict.MVSDataset(data_path, data_list, mode, num_srcs, num_depths,
-                                                          interval_scale, shuffle=shuffle, seq_size=seq_size,
-                                                          batch_size=batch_size, max_h=max_h, max_w=max_w, fix_res=fix_res)
+            self.mvs_dataset = DTUDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
+                                          batch_size=batch_size, num_stages=num_stages, load_prior=load_prior)
+        # elif mode == 'predict':
+        #     self.mvs_dataset = general_predict.MVSDataset(data_path, data_list, mode, num_srcs, num_depths,
+        #                                                   interval_scale, shuffle=shuffle, seq_size=seq_size,
+        #                                                   batch_size=batch_size, max_h=max_h, max_w=max_w, fix_res=fix_res)
         else:
-            self.mvs_dataset = general_eval.MVSDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
-                                                       shuffle=shuffle, seq_size=seq_size, batch_size=batch_size,
-                                                       max_h=max_h, max_w=max_w, fix_res=fix_res)
-        sampler = SequentialSampler(self.mvs_dataset)
-        super().__init__(self.mvs_dataset, batch_size=batch_size, shuffle=False, sampler=sampler,
-                         num_workers=4, pin_memory=True)
+            self.mvs_dataset = MVSDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
+                                          batch_size=batch_size, num_stages=num_stages, load_prior=load_prior,
+                                          max_h=max_h, max_w=max_w, fix_res=fix_res)
+        drop_last = True if mode == 'train' else False
+        super().__init__(self.mvs_dataset, batch_size=batch_size, shuffle=shuffle,
+                         num_workers=4, pin_memory=True, drop_last=drop_last)
 
         self.n_samples = len(self.mvs_dataset)
-        self.device = None
 
-    def shuffle(self):
-        self.mvs_dataset.generate_indices()
+    def get_num_samples(self):
+        return len(self.mvs_dataset)
 
-    def set_device(self, device):
-        self.device = device
+
+class BlendedLoader(DataLoader):
+
+    def __init__(self, data_path, data_list, mode, num_srcs, num_depths, interval_scale=1.0,
+                 shuffle=True, batch_size=1, num_stages=3, load_prior=True, **kwargs):
+        if (mode == 'train') or (mode == 'val'):
+            self.mvs_dataset = BlendedMVSDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
+                                                 batch_size=batch_size, num_stages=num_stages, load_prior=load_prior)
+        else:
+            self.mvs_dataset = BlendedMVSDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
+                                                 batch_size=batch_size, num_stages=num_stages, load_prior=load_prior)
+        drop_last = True if mode == 'train' else False
+        super().__init__(self.mvs_dataset, batch_size=batch_size, shuffle=shuffle,
+                         num_workers=4, pin_memory=True, drop_last=drop_last)
+
+        self.n_samples = len(self.mvs_dataset)
 
     def get_num_samples(self):
         return len(self.mvs_dataset)

@@ -162,6 +162,8 @@ class CascadeMVSNet(nn.Module):
         # depth map refinement
         if self.refine:
             refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
-            outputs["refined_depth"] = refined_depth
+            outputs["final_depth"] = refined_depth
+        else:
+            outputs["final_depth"], outputs["final_conf"] = outputs["depth"], outputs["photometric_confidence"]
 
         return outputs
