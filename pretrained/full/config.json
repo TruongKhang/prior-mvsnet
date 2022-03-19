@@ -7,7 +7,7 @@
         "args": {
             "refine": true,
             "ndepths": [
-                80,
+                64,
                 32,
                 8
             ],

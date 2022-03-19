@@ -182,7 +182,7 @@ class DTUDataset(Dataset):
 
             imgs.append(img)
 
-            if self.kwargs['load_prior'] is not None:
+            if self.kwargs['load_prior']:
                 mask_vid = self.read_mask_hr(mask_filename_hr)
                 for stage in input_masks.keys():
                     input_masks[stage].append(mask_vid[stage])
@@ -214,15 +214,16 @@ class DTUDataset(Dataset):
             proj_matrices_ms["stage%d" % (i + 1)] = stage_projmats
 
         outputs = {}
-        if self.kwargs['load_prior'] is not None:
+        if self.kwargs['load_prior']:
             for stage in input_depths.keys():
                 input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
                 input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
                 input_masks[stage] = np.expand_dims(np.stack(input_masks[stage]), axis=1)
             outputs.update({"prior_depths": input_depths, "prior_confs": input_confs, "prior_masks": input_masks})
 
-        return outputs.update({"imgs": imgs,
-                               "proj_matrices": proj_matrices_ms,
-                               "depth": depth_ms,
-                               "depth_values": depth_values,
-                               "mask": mask})
+        outputs.update({"imgs": imgs,
+                        "proj_matrices": proj_matrices_ms,
+                        "depth": depth_ms,
+                        "depth_values": depth_values,
+                        "mask": mask})
+        return outputs

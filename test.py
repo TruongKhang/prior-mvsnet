@@ -35,10 +35,12 @@ parser.add_argument('--testlist', help='testing scene list')
 
 parser.add_argument('--batch_size', type=int, default=1, help='testing batch size')
 parser.add_argument('--numdepth', type=int, default=192, help='the number of depth values')
+parser.add_argument('--num_stages', type=int, default=3, help='the number of stages')
 
 parser.add_argument('--resume', default=None, help='load a specific checkpoint')
 parser.add_argument('--outdir', default='./outputs', help='output dir')
 parser.add_argument('--save_png', action='store_true', help='type of output files')
+parser.add_argument('--load_prior', action='store_true', help='load prior depth')
 parser.add_argument('--display', action='store_true', help='display depth images and masks')
 
 parser.add_argument('--share_cr', action='store_true', help='whether share the cost volume regularization')
@@ -203,7 +205,7 @@ def save_scene_depth(testlist, config):
         for batch_idx, sample in enumerate(test_data_loader):
             start_time = time.time()
             sample_cuda = tocuda(sample)
-            num_stage = len(config["arch"]["args"]["ndepths"])
+            num_stage = args.num_stages #len(config["arch"]["args"]["ndepths"])
 
             # scene = sample["filename"][0].split('/')[0]
             # depth_scale = depth_scale_tt[scene]
@@ -239,7 +241,7 @@ def save_scene_depth(testlist, config):
                 os.makedirs(img_filename.rsplit('/', 1)[0], exist_ok=True)
                 # save depth maps
                 if args.save_png: # only for blendedmvs and tanks & temples
-                    scale = 10 if args.dataset == 'dtu' else 1000
+                    scale = 10 if args.dataset == 'dtu' else 100
                     depth_est = cv2.resize(depth_est, (args.max_w, args.max_h))
                     depth_est = Image.fromarray((depth_est * scale).astype(np.uint16))
                     depth_est.save(depth_filename.replace('.pfm', '.png'))
@@ -429,7 +431,7 @@ if __name__ == '__main__':
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    save_depth(testlist, config)
+    # save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
     if args.filter_method == "normal":

@@ -174,7 +174,7 @@ class BlendedMVSDataset(Dataset):
 
             imgs.append(img)
 
-            if self.kwargs['load_prior'] is not None:
+            if self.kwargs['load_prior']:
                 mask_vid = self.read_mask(mask_filename)
                 for stage in input_masks.keys():
                     input_masks[stage].append(mask_vid[stage])
@@ -183,9 +183,9 @@ class BlendedMVSDataset(Dataset):
                 prior_conf_file = os.path.join(self.datapath, 'priors/{}/confidence/{:0>8}'.format(scan, vid))
                 p_depth, p_conf = self.read_prior(prior_depth_file, prior_conf_file, filetype='png')
                 height, width = p_depth.shape
-                for i in range(3):
-                    p = self.kwargs["num_stages"] - i - 1
-                    input_depths["stage%d" % (i + 1)].append(
+                for s in range(3):
+                    p = self.kwargs["num_stages"] - s - 1
+                    input_depths["stage%d" % (s + 1)].append(
                         cv2.resize(p_depth, (width // (2 ** p), height // (2 ** p)),
                                    interpolation=cv2.INTER_NEAREST))
                     input_confs["stage%d" % (i + 1)].append(cv2.resize(p_conf, (width // (2 ** p), height // (2 ** p)),
@@ -202,13 +202,14 @@ class BlendedMVSDataset(Dataset):
             proj_matrices_ms["stage%d" % (i + 1)] = stage_projmats
 
         outputs = {}
-        if self.kwargs['load_prior'] is not None:
+        if self.kwargs['load_prior']:
             for stage in input_depths.keys():
                 input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
                 input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
                 input_masks[stage] = np.expand_dims(np.stack(input_masks[stage]), axis=1)
             outputs.update({"prior_depths": input_depths, "prior_confs": input_confs, "prior_masks": input_masks})
-
-        return outputs.update({"imgs": imgs, "proj_matrices": proj_matrices_ms,
-                               "depth": depth_ms, "depth_values": depth_values, "mask": mask,
-                               "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}"})
+          
+        outputs.update({"imgs": imgs, "proj_matrices": proj_matrices_ms,
+                        "depth": depth_ms, "depth_values": depth_values, "mask": mask,
+                        "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}"})
+        return outputs

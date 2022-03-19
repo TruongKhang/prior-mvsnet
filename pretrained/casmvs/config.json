@@ -25,10 +25,10 @@
         }
     },
     "data_loader": {
-        "type": "DTULoader",
+        "type": "BlendedLoader",
         "args": {
-            "data_path": "/mnt/sdb/khang/dtu_dataset/train",
-            "data_list": "lists/dtu/train.txt",
+            "data_path": "/mnt/sdb1/khang/blendedmvs",
+            "data_list": "lists/blended/training_list.txt",
             "mode": "train",
             "num_srcs": 4,
             "num_depths": 192,

@@ -184,7 +184,7 @@ class MVSDataset(Dataset):
             #mask_file = os.path.join(self.datapath, 'inputs/{}/{}/mask/{:0>8}_final.png'.format(stage, scan, vid))
             #mask_prior = np.array(Image.open(mask_file), dtype=np.float32) / 255
             #mask_prior = (mask_prior > 0.5).astype(np.float32)
-            if self.kwargs['load_prior'] is not None:
+            if self.kwargs['load_prior']:
                 prior_depth_file = os.path.join(self.datapath, 'priors/{}/depth_est/{:0>8}'.format(scan, vid))
             # in_depth = np.array(read_pfm(in_depth_file)[0], dtype=np.float32)
             # in_depth = (in_depth*10).astype(np.uint16)
@@ -214,13 +214,14 @@ class MVSDataset(Dataset):
             stage_projmats[:, 1, :2, :] = proj_matrices[:, 1, :2, :] / (2 ** p)
             proj_matrices_ms["stage%d" % (i + 1)] = stage_projmats
         outputs = {}
-        if self.kwargs['load_prior'] is not None:
+        if self.kwargs['load_prior']:
             for stage in input_depths.keys():
                 input_depths[stage] = np.expand_dims(np.stack(input_depths[stage]), axis=1)
                 input_confs[stage] = np.expand_dims(np.stack(input_confs[stage]), axis=1)
             outputs.update({"prior_depths": input_depths, "prior_confs": input_confs})
 
-        return outputs.update({"imgs": imgs,
-                               "proj_matrices": proj_matrices_ms,
-                               "depth_values": depth_values,
-                               "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}"})
+        outputs.update({"imgs": imgs,
+                        "proj_matrices": proj_matrices_ms,
+                        "depth_values": depth_values,
+                        "filename": scan + '/{}/' + '{:0>8}'.format(view_ids[0]) + "{}"})
+        return outputs
