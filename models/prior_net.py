@@ -63,7 +63,7 @@ def convt_bn_relu(in_channels, out_channels, kernel_size, stride=1, padding=0, o
 
 
 class PriorNet(nn.Module):
-    def __init__(self, bn=False):
+    def __init__(self, bn=False, pretrained=None):
         super(PriorNet, self).__init__()
 
         self.bn = bn
@@ -78,6 +78,10 @@ class PriorNet(nn.Module):
                                               ResidualBlock(32),
                                               nn.Conv2d(32, 1, 1))
         self.conf_refinement = UNetSP(1, 1)
+
+        if pretrained is not None:
+            ckpt = torch.load(pretrained)
+            self.load_state_dict(ckpt['state_dict'], strict=True)
 
     def forward(self, depths, confs):
         # (img has shape: (batch_size, h, w)) (grayscale)

@@ -18,7 +18,7 @@ class Trainer(BaseTrainer):
         super().__init__(model, criterion, optimizer, config, writer=writer)
         self.config = config
         self.data_loader = data_loader
-        self.data_loader.set_device(self.device)
+        #self.data_loader.set_device(self.device)
         if len_epoch is None:
             # epoch-based training
             self.len_epoch = len(self.data_loader)
@@ -30,8 +30,8 @@ class Trainer(BaseTrainer):
         self.do_validation = self.valid_data_loader is not None
         self.lr_scheduler = lr_scheduler
         self.log_step = config['trainer']['logging_every'] # int(np.sqrt(data_loader.batch_size))
-        self.depth_scale = config["trainer"]["depth_scale"]
-        self.use_prior = config["trainer"]["use_prior"]
+        self.scale2dtu = config["trainer"]["scale2dtu"]
+        self.num_stages = config["data_loader"]["args"]["num_stages"]
         self.train_metrics = DictAverageMeter()
         self.valid_metrics = DictAverageMeter()
 
@@ -44,7 +44,7 @@ class Trainer(BaseTrainer):
         self.model.train()
         print('Epoch {}:'.format(epoch))
 
-        self.data_loader.dataset.generate_indices()
+        # self.data_loader.dataset.generate_indices()
         # training
         for batch_idx, sample in enumerate(self.data_loader):
             start_time = time.time()
@@ -53,15 +53,16 @@ class Trainer(BaseTrainer):
             sample_cuda = tocuda(sample)
             depth_gt_ms = sample_cuda["depth"]
             mask_ms = sample_cuda["mask"]
-            num_stage = len(self.config["arch"]["args"]["ndepths"])
+            num_stage = self.num_stages
             depth_gt = depth_gt_ms["stage{}".format(num_stage)]
             mask = mask_ms["stage{}".format(num_stage)]
 
-            imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
+            imgs, cam_params, depth_values = sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"]
+            # automatically compute depth scale
+            d_interval = (depth_values[:, 1] - depth_values[:, 0]) / self.scale2dtu
+            d_interval = d_interval.reshape(-1, 1, 1)
 
-            prior = None
-            if self.use_prior:
-                depths, confs, masks = sample_cuda["prior_depths"], sample_cuda["prior_confs"], sample_cuda[
+            depths, confs, masks = sample_cuda["prior_depths"], sample_cuda["prior_confs"], sample_cuda[
                     "prior_masks"]  # [B,N,1,H,W]
                 # all_gt_depths = sample_cuda["gt_depths"]
                 # for stage in cam_params.keys():
@@ -69,20 +70,18 @@ class Trainer(BaseTrainer):
                 #     # m = (masks[stage] > 0.5).float()
                 #     warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
                 #     prior[stage] = warped_depths / self.depth_scale, warped_confs
-                prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"], depth_scale=self.depth_scale)
+            prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"]) #, depth_scale=d_interval)
 
-            # self.optimizer.zero_grad()
-            for otm in self.optimizer:
-                otm.zero_grad()
+            self.optimizer.zero_grad()
+            # for otm in self.optimizer:
+            #     otm.zero_grad()
 
-            outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
-                                 src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]), gt_vis=None)
+            outputs = self.model(imgs, cam_params, depth_values, prior=prior, depth_scale=d_interval.unsqueeze(1))
 
             loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms, dlossw=self.config["trainer"]["dlossw"],
-                                              use_prior=self.use_prior)
+                                              depth_scale=d_interval)
             loss.backward()
-            for otm in self.optimizer:
-                otm.step()
+            self.optimizer.step()
             self.lr_scheduler["mvsnet"].step()
 
             # scalar_outputs = {"loss": loss,
@@ -106,12 +105,12 @@ class Trainer(BaseTrainer):
                 print(
                     "Epoch {}/{}, Iter {}/{}, lr {:.6f}, train loss = {:.3f}, depth loss = {:.3f}, time = {:.3f}".format(
                         epoch, self.epochs, batch_idx, len(self.data_loader),
-                        self.optimizer[0].param_groups[0]["lr"], loss, depth_loss, time.time() - start_time))
+                        self.optimizer.param_groups[0]["lr"], loss, depth_loss, time.time() - start_time))
             # del scalar_outputs, image_outputs
             self.train_metrics.update({"loss": loss.item(), "depth_loss": depth_loss.item()}, n=depth_gt.size(0))
 
-        if "prior" in self.lr_scheduler.keys():
-            self.lr_scheduler["prior"].step()
+        # if "prior" in self.lr_scheduler.keys():
+        #     self.lr_scheduler["prior"].step()
 
         if (epoch % self.config["trainer"]["eval_freq"] == 0) or (epoch == self.epochs - 1):
             self._valid_epoch(epoch)
@@ -143,14 +142,15 @@ class Trainer(BaseTrainer):
                 sample_cuda = tocuda(sample)
                 depth_gt_ms = sample_cuda["depth"]
                 mask_ms = sample_cuda["mask"]
-                num_stage = len(self.config["arch"]["args"]["ndepths"])
+                num_stage = self.num_stages
                 depth_gt = depth_gt_ms["stage{}".format(num_stage)]
                 mask = mask_ms["stage{}".format(num_stage)]
 
-                imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
-                prior = None
-                if self.use_prior:
-                    depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
+                imgs, cam_params, depth_values = sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"]
+                d_interval = (depth_values[:, 1] - depth_values[:, 0]) / self.scale2dtu
+                d_interval = d_interval.reshape(-1, 1, 1)
+
+                depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
                     # all_gt_depths = sample_cuda["gt_depths"]
                     # masks = sample_cuda["prior_masks"]
                     # for stage in cam_params.keys():
@@ -158,18 +158,17 @@ class Trainer(BaseTrainer):
                     #     m = (masks[stage] > 0.5).float()
                     #     warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
                     #     prior[stage] = warped_depths / self.depth_scale, warped_confs
-                    prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"],
-                                      depth_scale=self.depth_scale)
+                prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"]) #,
+                                      #depth_scale=d_interval)
 
-                outputs = self.model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=self.depth_scale,
-                                     src_prior=(sample_cuda["prior_depths"], sample_cuda["prior_confs"]), gt_vis=None)
+                outputs = self.model(imgs, cam_params, depth_values, prior=prior, depth_scale=d_interval.unsqueeze(1))
 
                 loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms,
                                                   dlossw=self.config["trainer"]["dlossw"],
-                                                  use_prior=self.use_prior)
+                                                  depth_scale=d_interval)
 
                 depth_est = outputs["final_depth"].detach()
-                mvs_depth = outputs["depth"].detach()
+                #mvs_depth = outputs["depth"].detach()
                 # vis_maps = vis_masks["stage3"] # outputs["vis_maps"]
                 # folder = '%s/view%d' % (save_folder, batch_idx)
                 # if not os.path.exists(folder):
@@ -182,28 +181,28 @@ class Trainer(BaseTrainer):
                 #     plt.imsave('%s/vis_map_src%d.png' % (folder, idx+1), vmap)
                 #     src_view = imgs[0, idx+1].permute(1, 2, 0).cpu().numpy()
                 #     plt.imsave('%s/src_view%d.png' % (save_folder, idx+1), src_view)
-
+                di = d_interval[0].item()
                 scalar_outputs = {"loss": loss,
                                   "depth_loss": depth_loss,
                                   "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
-                                  "depth_error_no_refinement": AbsDepthError_metrics(mvs_depth, depth_gt, mask > 0.5),
-                                  "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
-                                  "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
-                                  "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),
-                                  "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 14),
-                                  "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 20),
+                                  #"depth_error_no_refinement": AbsDepthError_metrics(mvs_depth, depth_gt, mask > 0.5),
+                                  "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*2),
+                                  "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*4),
+                                  "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*8),
+                                  "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*14),
+                                  "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*20),
 
-                                  "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, 2.0]),
+                                  "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, di*2.0]),
                                   "thres4mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                             [2.0, 4.0]),
+                                                                             [di*2.0, di*4.0]),
                                   "thres8mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                             [4.0, 8.0]),
+                                                                             [di*4.0, di*8.0]),
                                   "thres14mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                              [8.0, 14.0]),
+                                                                              [di*8.0, di*14.0]),
                                   "thres20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                              [14.0, 20.0]),
+                                                                              [di*14.0, di*20.0]),
                                   "thres>20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                               [20.0, 1e5]),
+                                                                               [di*20.0, 1e5]),
                                   }
 
                 """prior_depth_est = outputs["prior_depth"].squeeze(1)

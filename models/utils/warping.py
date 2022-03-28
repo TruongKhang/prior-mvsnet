@@ -7,70 +7,6 @@ from PIL import Image
 import MYTH
 
 
-def parse_intrinsics(intrinsics):
-    fx = intrinsics[:, 0, 0]
-    fy = intrinsics[:, 1, 1]
-    cx = intrinsics[:, 0, 2]
-    cy = intrinsics[:, 1, 2]
-    return fx, fy, cx, cy
-
-
-def expand_as(x, y):
-    if len(x.shape) == len(y.shape):
-        return x
-
-    for i in range(len(y.shape) - len(x.shape)):
-        x = x.unsqueeze(-1)
-
-    return x
-
-
-def lift(x, y, z, intrinsics, homogeneous=False):
-    '''
-
-    :param self:
-    :param x: Shape (batch_size, num_points)
-    :param y:
-    :param z:
-    :param intrinsics:
-    :return:
-    '''
-    fx, fy, cx, cy = parse_intrinsics(intrinsics)
-
-    x_lift = (x - expand_as(cx, x)) / expand_as(fx, x) * z
-    y_lift = (y - expand_as(cy, y)) / expand_as(fy, y) * z
-
-    if homogeneous:
-        return torch.stack((x_lift, y_lift, z, torch.ones_like(z, device=intrinsics.device)), dim=-1)
-    else:
-        return torch.stack((x_lift, y_lift, z), dim=-1)
-
-
-def world_from_xy_depth(xy, depth, cam2world, intrinsics):
-    '''Translates meshgrid of xy pixel coordinates plus depth to  world coordinates.
-    '''
-    batch_size, ndepths = depth.size(0), depth.size(1)
-    # height, width = img_shape
-    # y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=depth.device),
-    #                        torch.arange(0, width, dtype=torch.float32, device=depth.device)])
-    # y, x = y.contiguous(), x.contiguous()
-    # y, x = y.view(height * width), x.view(height * width)
-
-    x_cam = xy[..., 0].view(batch_size, -1) # ndepths, -1)
-    y_cam = xy[..., 1].view(batch_size, -1) # ndepths, -1)
-    z_cam = depth.view(batch_size, -1) # ndepths, -1)
-
-    pixel_points_cam = lift(x_cam, y_cam, z_cam, intrinsics=intrinsics, homogeneous=True)  # (batch_size, -1, 4)
-
-    # permute for batch matrix product
-    pixel_points_cam = pixel_points_cam.permute(0, 2, 1) #1, 3, 2)
-
-    world_coords = torch.bmm(cam2world, pixel_points_cam).permute(0, 2, 1)[:, :, :3]  # (batch_size, -1, 3)
-    # world_coords = torch.matmul(cam2world.unsqueeze(1), pixel_points_cam).permute(0, 1, 3, 2)[..., :3]
-
-    return world_coords
-
-
 def homo_warping_3D(src_fea, src_proj, ref_proj, depth_values):
     # src_fea: [B, C, H, W]
     # src_proj: [B, 4, 4]
@@ -96,7 +32,7 @@ def homo_warping_3D(src_fea, src_proj, ref_proj, depth_values):
     rot_depth_xyz = rot_xyz.unsqueeze(2).repeat(1, 1, num_depth, 1) * depth_values.view(batch, 1, num_depth,
                                                                                             -1)  # [B, 3, Ndepth, H*W]
     proj_xyz = rot_depth_xyz + trans.view(batch, 3, 1, 1)  # [B, 3, Ndepth, H*W]
-    proj_xy = proj_xyz[:, :2, :, :] / proj_xyz[:, 2:3, :, :]  # [B, 2, Ndepth, H*W]
+    proj_xy = proj_xyz[:, :2, :, :] / (proj_xyz[:, 2:3, :, :] + 1e-6)  # [B, 2, Ndepth, H*W]
     proj_x_normalized = proj_xy[:, 0, :, :] / ((width - 1) / 2) - 1
     proj_y_normalized = proj_xy[:, 1, :, :] / ((height - 1) / 2) - 1
     proj_xy = torch.stack((proj_x_normalized, proj_y_normalized), dim=3)  # [B, Ndepth, H*W, 2]
@@ -105,6 +41,7 @@ def homo_warping_3D(src_fea, src_proj, ref_proj, depth_values):
     warped_src_fea = F.grid_sample(src_fea, grid.view(batch, num_depth * height, width, 2), mode='bilinear',
                                    padding_mode='zeros') #, align_corners=True)
     warped_src_fea = warped_src_fea.view(batch, channels, num_depth, height, width)
+    # print(src_fea.mean().item(), grid.mean().item(), warped_src_fea.mean().item())
 
     return warped_src_fea
 
@@ -149,7 +86,7 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
     # source 3D space
     proj_xyz = torch.matmul(ref2src_proj, xyz_ref)[:, :3, :] # [B, 3, H*W]
     # source view x, y
-    xy_src = proj_xyz[:, :2, :] / proj_xyz[:, 2:3, :]
+    xy_src = proj_xyz[:, :2, :] / (proj_xyz[:, 2:3, :] + 1e-6)
     x_src, y_src = xy_src[:, 0, :].view(batch_size, height, width), xy_src[:, 1, :].view(batch_size, height, width)
     ## step2. reproject the source view points with source view depth estimation
     # find the depth estimation of the source view
@@ -165,7 +102,7 @@ def reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref, depth_src, i
     xyz_reprojected = torch.matmul(src2ref_proj, xyz_src)[:, :3, :] # [B, 3, H*W]
     # source view x, y, depth
     depth_reprojected = xyz_reprojected[:, 2, :].view(batch_size, height, width)
-    xy_reprojected = xyz_reprojected[:, :2, :] / xyz_reprojected[:, 2:3, :]
+    xy_reprojected = xyz_reprojected[:, :2, :] / (xyz_reprojected[:, 2:3, :] + 1e-6)
     x_reprojected = xy_reprojected[:, 0, :].view(batch_size, height, width)
     y_reprojected = xy_reprojected[:, 1, :].view(batch_size, height, width)
 
@@ -184,7 +121,7 @@ def check_geometric_consistency(depth_ref, intrinsics_ref, extrinsics_ref, depth
 
     # check |d_reproj-d_1| / d_1 < 0.01
     depth_diff = torch.abs(depth_reprojected - depth_ref)
-    relative_depth_diff = depth_diff / (depth_ref + 1e-16)
+    relative_depth_diff = depth_diff / (depth_ref + 1e-6)
     mask = (dist < 2) & (relative_depth_diff < 0.01)
     depth_reprojected[~mask] = 0
 
@@ -228,7 +165,7 @@ def get_prior(depths, confs, project_matrices, depth_scale=1.0, thres_view=1, th
     depths[:, 1:, 0, ...] = filtered_src_depths
     confs[:, 1:, 0, ...] = (filtered_src_confs > 0).float()
     warped_depths, warped_confs = homo_warping_2D(depths, confs, project_matrices)
-    warped_depths /= depth_scale
+    # warped_depths /= depth_scale
 
     scale = {"stage1": 4, "stage2": 2, "stage3": 1}
     H, W = warped_depths.size(3), warped_depths.size(4)

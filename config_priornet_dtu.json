@@ -1,0 +1,57 @@
+{
+    "name": "PriorNet",
+    "n_gpu": 1,
+    "dataset_name": "dtu",
+
+    "arch": {
+        "type": "PriorNet",
+        "args": {
+            "bn": false,
+            "pretrained": "pretrained/prior/checkpoint-epoch19.pth"
+        }
+    },
+    "data_loader": {
+        "type": "DTULoader",
+        "args":{
+            "data_path": "/mnt/sdb/khang/dtu_dataset/train",
+            "data_list": "lists/dtu/train.txt",
+            "mode": "train",
+            "num_srcs": 4,
+            "num_depths": 192,
+            "interval_scale": 1.06,
+            "shuffle": true,
+            "batch_size": 4,
+            "num_stages": 3,
+            "load_prior": true
+        }
+    },
+    "optimizer": {
+        "type": "Adam",
+        "args":{
+            "lr": 0.00001,
+            "weight_decay": 0,
+            "amsgrad": true
+        }
+    },
+    "loss": "masked_prob_loss",
+    "lr_scheduler": {
+        "type": "StepLR",
+        "args": {
+            "step_size": 10,
+            "gamma": 0.25
+        }
+    },
+    "trainer": {
+        "epochs": 30,
+        "seq": true,
+        "save_dir": "saved/",
+        "save_period": 1,
+        "verbosity": 2,
+        "logging_every": 100,
+        "tensorboard": false,
+        "scale2dtu": 2.65,
+        "use_prior": true,
+        "use_prior_loss": true,
+        "eval_freq": 1
+    }
+}

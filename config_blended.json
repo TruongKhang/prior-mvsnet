@@ -1,0 +1,69 @@
+{
+    "name": "SeqProbMVS",
+    "n_gpu": 1,
+    "dataset_name": "blendedmvs",
+
+    "arch": {
+        "type": "SeqProbMVSNet",
+        "args": {
+            "refine": true,
+            "ndepths": [64, 32, 8],
+            "depth_interals_ratio": [3.0, 2.0, 1.0],
+            "share_cr": false,
+            "cr_base_chs": [8, 8, 8],
+            "num_stages": 3,
+            "grad_method": "detach",
+            "pretrained_prior": "saved/models/PriorNet/0322_150812/checkpoint-epoch20.pth"
+        }
+    },
+    "data_loader": {
+        "type": "BlendedLoader",
+        "args":{
+            "data_path": "/mnt/sdb/khang/blendedmvs",
+            "data_list": "lists/blended/training_list.txt",
+            "mode": "train",
+            "num_srcs": 3,
+            "num_depths": 192,
+            "interval_scale": 1.0,
+            "shuffle": true,
+            "batch_size": 4,
+            "num_stages": 3,
+            "load_prior": true
+        }
+    },
+    "optimizer": {
+        "type": "Adam",
+        "args":{
+            "lr": 0.0001,
+            "weight_decay": 0,
+            "amsgrad": true
+        }
+    },
+    "loss": "seq_prob_loss",
+    "metrics": [
+        "mae", "rmse", "mre"
+    ],
+    "lr_scheduler": {
+        "type": "StepLR",
+        "args": {
+            "step_size": 3,
+            "gamma": 0.5
+        }
+    },
+    "trainer": {
+        "epochs": 15,
+        "seq": true,
+        "save_dir": "saved/",
+        "save_period": 1,
+        "verbosity": 2,
+        "logging_every": 100,
+        "early_stop": 20,
+        "tensorboard": false,
+        "scale2dtu": 1.5,
+        "use_prior": true,
+        "use_prior_loss": false,
+        "lrepochs": "5,10,12,14,16:2",
+        "dlossw": [0.5, 1.0, 2.0],
+        "eval_freq": 1
+    }
+}

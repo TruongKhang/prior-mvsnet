@@ -62,8 +62,8 @@ class BlendedMVSDataset(Dataset):
         extrinsics = np.fromstring(' '.join(lines[1:5]), dtype=np.float32, sep=' ').reshape((4, 4))
         # intrinsics: line [7-10), 3x3 matrix
         intrinsics = np.fromstring(' '.join(lines[7:10]), dtype=np.float32, sep=' ').reshape((3, 3))
-        #intrinsics[0, 2] -= 64.0
-        #intrinsics[1, 2] -= 32.0
+        intrinsics[0, 2] -= 64.0
+        intrinsics[1, 2] -= 32.0
         # intrinsics[:2, :] /= 4.0
         # depth_min & depth_interval: line 11
         depth_min = float(lines[11].split()[0])
@@ -80,7 +80,7 @@ class BlendedMVSDataset(Dataset):
 
     def prepare_img(self, img):
         h, w = img.shape[:2]
-        target_h, target_w = 576, 768 #512, 640
+        target_h, target_w = 512, 640
         start_h, start_w = (h - target_h)//2, (w - target_w)//2
         img_crop = img[start_h: start_h + target_h, start_w: start_w + target_w]
         return img_crop
@@ -123,11 +123,12 @@ class BlendedMVSDataset(Dataset):
         depth_file = '{}.{}'.format(depth_file, filetype)
         conf_file = '{}.{}'.format(conf_file, filetype)
         if filetype == 'png':
-            prior_depth = np.array(Image.open(depth_file), dtype=np.float32) / 1000
+            prior_depth = np.array(Image.open(depth_file), dtype=np.float32) / 100
             prior_conf = np.array(Image.open(conf_file), dtype=np.float32) / 255
         else:
             prior_depth = np.array(read_pfm(depth_file)[0], dtype=np.float32)
             prior_conf = np.array(read_pfm(conf_file)[0], dtype=np.float32)
+        prior_depth, prior_conf = self.prepare_img(prior_depth), self.prepare_img(prior_conf)
         return prior_depth, prior_conf
 
     def __getitem__(self, idx):
@@ -136,9 +137,9 @@ class BlendedMVSDataset(Dataset):
         meta = self.metas[idx]
         scan, ref_view, src_views, scene_name = meta
         # use only the reference view and first nviews-1 source views
-        # if self.mode == 'train':
-        #     src_views = src_views[:7]
-        #     np.random.shuffle(src_views)
+        if self.mode == 'train':
+            src_views = src_views[:7]
+            np.random.shuffle(src_views)
         view_ids = [ref_view] + src_views[:(self.nviews-1)]
 
         imgs = []
@@ -183,12 +184,12 @@ class BlendedMVSDataset(Dataset):
                 prior_conf_file = os.path.join(self.datapath, 'priors/{}/confidence/{:0>8}'.format(scan, vid))
                 p_depth, p_conf = self.read_prior(prior_depth_file, prior_conf_file, filetype='png')
                 height, width = p_depth.shape
-                for s in range(3):
+                for s in range(self.kwargs["num_stages"]):
                     p = self.kwargs["num_stages"] - s - 1
                     input_depths["stage%d" % (s + 1)].append(
                         cv2.resize(p_depth, (width // (2 ** p), height // (2 ** p)),
                                    interpolation=cv2.INTER_NEAREST))
-                    input_confs["stage%d" % (i + 1)].append(cv2.resize(p_conf, (width // (2 ** p), height // (2 ** p)),
+                    input_confs["stage%d" % (s + 1)].append(cv2.resize(p_conf, (width // (2 ** p), height // (2 ** p)),
                                                                        interpolation=cv2.INTER_NEAREST))
 
         #all

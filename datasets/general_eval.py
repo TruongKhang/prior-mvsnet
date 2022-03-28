@@ -95,13 +95,14 @@ class MVSDataset(Dataset):
 
     def scale_mvs_input(self, img, intrinsics, max_w, max_h, base=32):
         h, w = img.shape[:2]
-        if h > max_h or w > max_w:
+        """if h > max_h or w > max_w:
             scale = 1.0 * max_h / h
             if scale * w > max_w:
                 scale = 1.0 * max_w / w
             new_w, new_h = scale * w // base * base, scale * h // base * base
         else:
-            new_w, new_h = 1.0 * w // base * base, 1.0 * h // base * base
+            new_w, new_h = 1.0 * w // base * base, 1.0 * h // base * base"""
+        new_h, new_w = max_h, max_w
 
         scale_w = 1.0 * new_w / w
         scale_h = 1.0 * new_h / h
@@ -112,7 +113,7 @@ class MVSDataset(Dataset):
 
         return img, intrinsics
 
-    def read_prior(self, depth_file, conf_file, filetype='png'):
+    def read_prior(self, depth_file, conf_file, filetype='png', resize=None):
         depth_file = '{}.{}'.format(depth_file, filetype)
         conf_file = '{}.{}'.format(conf_file, filetype)
         if filetype == 'png':
@@ -121,6 +122,10 @@ class MVSDataset(Dataset):
         else:
             prior_depth = np.array(read_pfm(depth_file)[0], dtype=np.float32)
             prior_conf = np.array(read_pfm(conf_file)[0], dtype=np.float32)
+        if resize is not None:
+            new_h, new_w = resize
+            prior_depth = cv2.resize(prior_depth, (int(new_w), int(new_h)))
+            prior_conf = cv2.resize(prior_conf, (int(new_w), int(new_h)))
         return prior_depth, prior_conf
 
     def __getitem__(self, idx):
@@ -193,13 +198,13 @@ class MVSDataset(Dataset):
             # in_conf = np.array(read_pfm(in_conf_file)[0], dtype=np.float32)
             # in_conf = (in_conf * 255).astype(np.uint8)
             # in_conf = in_conf.astype(np.float32) / 255
-                p_depth, p_conf = self.read_prior(prior_depth_file, prior_conf_file, filetype='pfm')
+                p_depth, p_conf = self.read_prior(prior_depth_file, prior_conf_file, filetype='pfm', resize=(self.max_h, self.max_w))
                 height, width = p_depth.shape
-                for i in range(3):
-                    p = self.kwargs["num_stages"] - i - 1
-                    input_depths["stage%d" % (i + 1)].append(cv2.resize(p_depth, (width // (2 ** p), height // (2 ** p)),
+                for s in range(self.kwargs["num_stages"]):
+                    p = self.kwargs["num_stages"] - s - 1
+                    input_depths["stage%d" % (s + 1)].append(cv2.resize(p_depth, (width // (2 ** p), height // (2 ** p)),
                                                                         interpolation=cv2.INTER_NEAREST))
-                    input_confs["stage%d" % (i + 1)].append(cv2.resize(p_conf, (width // (2 ** p), height // (2 ** p)),
+                    input_confs["stage%d" % (s + 1)].append(cv2.resize(p_conf, (width // (2 ** p), height // (2 ** p)),
                                                                        interpolation=cv2.INTER_NEAREST))
 
         #all

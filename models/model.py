@@ -52,7 +52,6 @@ class DepthNet(nn.Module):
             var = (ref_volume - warped_volume) ** 2 # [B, C, D, H, W]
             if stage_idx < 2: #est_vis is None:
                 rel_diff = (ref_depth - src_depths[:, src_idx, ...]).abs() / (ref_depth + 1e-10)
-                # mask = ref_mask # & src_masks[:, src_idx, ...]
 
                 simple_cost_vol = self.regress_cost[stage_idx](var).squeeze(1) #torch.sum(var, dim=1)
                 max_cost, _ = torch.max(simple_cost_vol, dim=1, keepdim=True)
@@ -64,9 +63,8 @@ class DepthNet(nn.Module):
                 vis_map = est_vis[:, src_idx, ...]
             vis_maps.append(vis_map.detach())
             vis_map = vis_map.unsqueeze(2)
-            volume_sum += var * vis_map
-            weight_sum += vis_map
-            
+            volume_sum = volume_sum + var * vis_map
+            weight_sum = weight_sum + vis_map
         # aggregate multiple feature volumes by variance
         volume_variance = volume_sum / (weight_sum + 1e-10) #(num_views - 1)
 
@@ -85,7 +83,7 @@ class DepthNet(nn.Module):
 
 class SeqProbMVSNet(nn.Module):
     def __init__(self, refine=False, ndepths=(48, 32, 8), depth_interals_ratio=(4, 2, 1), share_cr=False,
-                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), pretrained_prior=None,
+                 grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), num_stages=3, pretrained_prior=None,
                  pretrained_mvs=None, use_prior=True):
         super(SeqProbMVSNet, self).__init__()
         self.refine = refine
@@ -95,7 +93,7 @@ class SeqProbMVSNet(nn.Module):
         self.grad_method = grad_method
         self.arch_mode = arch_mode
         self.cr_base_chs = cr_base_chs
-        self.num_stage = len(ndepths)
+        self.num_stage = num_stages #len(ndepths)
         print("**********netphs:{}, depth_intervals_ratio:{},  grad:{}, chs:{}************".format(ndepths,
               depth_interals_ratio, self.grad_method, self.cr_base_chs))
 
@@ -119,7 +117,7 @@ class SeqProbMVSNet(nn.Module):
         else:
             self.cost_regularization = nn.ModuleList([CostRegNet(in_channels=self.feature.out_channels[i],
                                                                  base_channels=self.cr_base_chs[i])
-                                                      for i in range(self.num_stage)])
+                                                      for i in range(3)])
         if self.refine:
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
@@ -158,12 +156,14 @@ class SeqProbMVSNet(nn.Module):
 
     def forward(self, imgs, proj_matrices, depth_values, prior=None, depth_scale=1.0, src_prior=None, gt_vis=None):
 
-        # prior_depths, prior_confs, is_begin = prior if prior is not None else
+        depth_min = depth_values[:, [0]].unsqueeze(-1).unsqueeze(-1)
+        depth_max = depth_values[:, [-1]].unsqueeze(-1).unsqueeze(-1)
+        depth_interval = (depth_max - depth_min).squeeze(1) / depth_values.size(1) #(depth_values[:, 1] - depth_values[:, 0]).unsqueeze(-1).unsqueeze(-1)
 
-        depth_min = float(depth_values[0, 0].cpu().numpy())
-        depth_max = float(depth_values[0, -1].cpu().numpy())
-        depth_interval = (depth_max - depth_min) / depth_values.size(1)
-        dmap_min, dmap_max = depth_values[:, 0], depth_values[:, -1]
+        # depth_min = float(depth_values[0, 0].cpu().numpy())
+        # depth_max = float(depth_values[0, -1].cpu().numpy())
+        # depth_interval = (depth_max - depth_min) / depth_values.size(1)
+        # dmap_min, dmap_max = depth_values[:, 0], depth_values[:, -1]
 
         # step 1. feature extraction
         features = []
@@ -172,12 +172,14 @@ class SeqProbMVSNet(nn.Module):
             features.append(self.feature(img))
 
         batch_size, height, width = imgs.size(0), imgs.size(3), imgs.size(4)
+        if self.num_stage == 4:
+            height, width = height // 2, width // 2
 
         outputs = {}
         depth, cur_depth = None, None
 
         vis_maps = None
-        for stage_idx in range(self.num_stage):
+        for stage_idx in range(3):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
             stage_name = "stage{}".format(stage_idx + 1)
@@ -204,7 +206,7 @@ class SeqProbMVSNet(nn.Module):
                                                         ndepth=self.ndepths[stage_idx],
                                                         depth_inteval_pixel=self.depth_interals_ratio[stage_idx] * depth_interval,
                                                         dtype=imgs[0].dtype,
-                                                        device=imgs[0].device,
+                                                        device=imgs[0].device, min_depth=depth_min, max_depth=depth_max,
                                                         shape=[batch_size, height, width])
 
             # added by Khang
@@ -214,19 +216,24 @@ class SeqProbMVSNet(nn.Module):
 
             if prior is not None:
                 prior_depths, prior_confs = prior[stage_name]
+                prior_masks = prior_depths > 0
+                # normalize depth in to DTU range
+                prior_depths = (prior_depths - depth_min.unsqueeze(1)) / depth_scale.unsqueeze(1) + 425
+                scaling_depth_values_stage = (depth_values_stage - depth_min) / depth_scale + 425
+
                 est_prior_depth, est_prior_conf = self.pr_net(prior_depths, prior_confs)
-                log_prior = self.get_log_prior(est_prior_depth, est_prior_conf, depth_values_stage / depth_scale)
+                log_prior = self.get_log_prior(est_prior_depth, est_prior_conf, scaling_depth_values_stage) # / depth_scale)
             else:
                 log_prior = 0.0
                 est_prior_depth, est_prior_conf = None, None
 
-            all_prior_depths = est_prior_depth.detach(), prior[stage_name][0]
-            all_prior_masks = (est_prior_conf.detach() > 0.1), (prior[stage_name][0] > 0)
+            all_prior_depths = est_prior_depth.detach(), prior_depths #prior[stage_name][0]
+            all_prior_masks = (est_prior_conf.detach() > 0.1), prior_masks #(prior[stage_name][0] > 0)
             log_likelihood, vis_maps = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
                                        cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
                                        log=True, est_vis=vis_maps, prior_info=(all_prior_depths, all_prior_masks), stage_idx=stage_idx)
-
+ 
             log_posterior = log_likelihood + log_prior
             posterior_vol = F.softmax(log_posterior, dim=1)
             depth = depth_regression(posterior_vol, depth_values_stage)
@@ -239,26 +246,29 @@ class SeqProbMVSNet(nn.Module):
             outputs[stage_name] = outputs_stage
             outputs.update(outputs_stage)
 
+        if self.num_stage == 4:
+            height, width = height * 2, width * 2
         total_dist = 0.0
-        final_depth = depth.detach().unsqueeze(1)
-        for stage_idx in range(self.num_stage):
+        final_depth = F.interpolate(depth.detach().unsqueeze(1), [height, width], mode='nearest')
+        for stage_idx in range(3):
             stage_name = "stage{}".format(stage_idx + 1)
             depth_stage, var_stage = outputs[stage_name]["depth"].detach(), outputs[stage_name]["var"].detach()
             depth_stage = F.interpolate(depth_stage.unsqueeze(1), [height, width], mode='nearest')
             var_stage = F.interpolate(var_stage.unsqueeze(1), [height, width], mode='nearest')
-            dist = torch.exp(- (depth_stage - final_depth).abs() / (var_stage + depth_scale))  / (var_stage / depth_scale + 1.0)
+            dist = torch.exp(- (depth_stage - final_depth).abs() / (var_stage + depth_scale)) / (var_stage / depth_scale + 1.0)
             total_dist = total_dist + dist
-        total_dist /= self.num_stage
+        total_dist /= 3
         final_conf = total_dist
-        feat_img = features[0]["stage3"].detach()
-        final_depth = final_depth / depth_scale
+        feat_img = features[0]["stage%d" % self.num_stage].detach()
         # depth map refinement
         if self.refine:
+            final_depth = (final_depth - depth_min) / depth_scale + 425
             final_depth, final_conf = self.refine_network(final_depth, final_conf, feat_img)
+            final_depth = (final_depth - 425) * depth_scale.squeeze(1) + depth_min.squeeze(1)
         else:
             final_depth = final_depth.squeeze(1)
             final_conf = final_conf.squeeze(1)
-        outputs["final_depth"] = final_depth * depth_scale
+        outputs["final_depth"] = final_depth #* depth_scale
         outputs["final_conf"] = final_conf
 
         return outputs

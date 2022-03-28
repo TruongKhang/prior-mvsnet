@@ -1,0 +1,57 @@
+{
+    "name": "PriorNet",
+    "n_gpu": 1,
+    "dataset_name": "blended",
+
+    "arch": {
+        "type": "PriorNet",
+        "args": {
+            "bn": false,
+            "pretrained": "pretrained/prior/checkpoint-epoch19.pth"
+        }
+    },
+    "data_loader": {
+        "type": "BlendedLoader",
+        "args":{
+            "data_path": "/mnt/sdb/khang/blendedmvs",
+            "data_list": "lists/blended/training_list.txt",
+            "mode": "train",
+            "num_srcs": 5,
+            "num_depths": 192,
+            "interval_scale": 1.0,
+            "shuffle": true,
+            "batch_size": 8,
+            "num_stages": 3,
+            "load_prior": true
+        }
+    },
+    "optimizer": {
+        "type": "Adam",
+        "args":{
+            "lr": 0.0001,
+            "weight_decay": 0,
+            "amsgrad": true
+        }
+    },
+    "loss": "masked_prob_loss",
+    "lr_scheduler": {
+        "type": "StepLR",
+        "args": {
+            "step_size": 4,
+            "gamma": 0.5
+        }
+    },
+    "trainer": {
+        "epochs": 20,
+        "seq": true,
+        "save_dir": "saved/",
+        "save_period": 1,
+        "verbosity": 2,
+        "logging_every": 100,
+        "tensorboard": false,
+        "scale2dtu": 1.5,
+        "use_prior": true,
+        "use_prior_loss": true,
+        "eval_freq": 1
+    }
+}

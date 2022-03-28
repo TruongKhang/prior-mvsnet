@@ -55,7 +55,7 @@ parser.add_argument('--num_view', type=int, default=3, help='num of view')
 parser.add_argument('--max_h', type=int, default=864, help='testing max h')
 parser.add_argument('--max_w', type=int, default=1152, help='testing max w')
 parser.add_argument('--fix_res', action='store_true', help='scene all using same res')
-parser.add_argument('--depth_scale', type=float, default=1.0,  help='scene all using same res')
+parser.add_argument('--scale2dtu', type=float, default=2.65,  help='scene all using same res')
 
 parser.add_argument('--num_worker', type=int, default=4, help='depth_filer worker')
 parser.add_argument('--save_freq', type=int, default=20, help='save freq of local pcd')
@@ -66,6 +66,7 @@ parser.add_argument('--filter_method', type=str, default=None, choices=["gipuma"
 # filter
 parser.add_argument('--conf', type=float, default=0.9, help='prob confidence')
 parser.add_argument('--thres_view', type=int, default=3, help='threshold of num view')
+parser.add_argument('--thres_disp', type=float, default=1.0, help='threshold of disparity')
 
 # filter by gimupa
 parser.add_argument('--fusibile_exe_path', type=str, default='./fusibile/fusibile')
@@ -199,7 +200,7 @@ def save_scene_depth(testlist, config):
     model = model.to(device)
     model.eval()
     # depth_scale_tt = {"Family": 0.0006, "Train": 0.0015, "Playground": 0.003, "Panther": 0.001, "M60": 0.001, "Lighthouse": 0.003, "Horse": 0.0006, "Francis": 0.0015}
-    depth_scale = args.depth_scale
+    # depth_scale = args.depth_scale
 
     with torch.no_grad():
         for batch_idx, sample in enumerate(test_data_loader):
@@ -210,11 +211,13 @@ def save_scene_depth(testlist, config):
             # scene = sample["filename"][0].split('/')[0]
             # depth_scale = depth_scale_tt[scene]
 
-            imgs, cam_params = sample_cuda["imgs"], sample_cuda["proj_matrices"]
+            imgs, cam_params, depth_values = sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"]
+            d_interval = (depth_values[:, 1] - depth_values[:, 0]) / args.scale2dtu
+            d_interval = d_interval.reshape(-1, 1, 1, 1)
             if args.load_prior:
                 depths, confs = sample_cuda["prior_depths"]["stage3"], sample_cuda["prior_confs"]["stage3"]  # [B,N,1,H,W]
-                prior = get_prior(depths, confs, cam_params["stage3"], depth_scale=depth_scale, thres_view=1, thresh_conf=0.1)
-                outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=depth_scale)
+                prior = get_prior(depths, confs, cam_params["stage3"], thres_view=1, thresh_conf=0.1)
+                outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=d_interval)
             else:
                 outputs = model(imgs, cam_params, sample_cuda["depth_values"])
             end_time = time.time()
@@ -333,7 +336,7 @@ def filter_depth(pair_folder, scan_folder, out_folder, plyfilename):
 
         reproj_xyd, in_range = fusion.get_reproj(
             *[sample[attr] for attr in ['ref_depth', 'src_depths', 'ref_cam', 'src_cams']])
-        vis_masks, vis_mask = fusion.vis_filter(sample['ref_depth'], reproj_xyd, in_range, 1.0, 0.01, args.thres_view)
+        vis_masks, vis_mask = fusion.vis_filter(sample['ref_depth'], reproj_xyd, in_range, args.thres_disp, 0.01, args.thres_view)
 
         ref_depth_ave = fusion.ave_fusion(sample['ref_depth'], reproj_xyd, vis_masks)
 

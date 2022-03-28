@@ -41,7 +41,7 @@ class DTUDataset(Dataset):
                 for view_idx in range(num_viewpoint):
                     ref_view = int(f.readline().rstrip())
                     src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
-                    src_views = src_views[:(self.nviews-1)]
+                    # src_views = src_views[:(self.nviews-1)]
 
                     # f.readline() # ignore the given source views
                     # src_views = [x for x in range(left, left+self.nviews) if x != ref_view]
@@ -139,16 +139,17 @@ class DTUDataset(Dataset):
         meta = self.metas[idx]
         scan, light_idx, ref_view, src_views = meta
         # use only the reference view and first nviews-1 source views
-
-        view_ids = [ref_view] + src_views
+        if self.mode == 'train':
+            np.random.shuffle(src_views)
+        view_ids = [ref_view] + src_views[:(self.nviews-1)]
 
         imgs = []
         mask = None
         depth_values = None
         proj_matrices = []
-        input_depths = {"stage1": [], "stage2": [], "stage3": []}
-        input_confs = {"stage1": [], "stage2": [], "stage3": []}
-        input_masks = {"stage1": [], "stage2": [], "stage3": []}
+        input_depths = {"stage%d" % (s+1): [] for s in range(self.kwargs["num_stages"])}
+        input_confs = {"stage%d" % (s+1): [] for s in range(self.kwargs["num_stages"])}
+        input_masks = {"stage%d" % (s+1): [] for s in range(self.kwargs["num_stages"])}
 
         for i, vid in enumerate(view_ids):
             # NOTE that the id in image file names is from 1 to 49 (not 0~48)
@@ -194,12 +195,12 @@ class DTUDataset(Dataset):
                                                'priors/{}/{}/confidence/{:0>3}_{}'.format(stage, scan, vid, light_idx))
                 p_depth, p_conf = self.read_prior(prior_depth_file, prior_conf_file, filetype='png')
                 height, width = p_depth.shape
-                for i in range(3):
-                    p = self.kwargs["num_stages"] - i - 1
-                    input_depths["stage%d" % (i + 1)].append(
+                for s in range(self.kwargs["num_stages"]):
+                    p = self.kwargs["num_stages"] - s - 1
+                    input_depths["stage%d" % (s + 1)].append(
                         cv2.resize(p_depth, (width // (2 ** p), height // (2 ** p)),
                                    interpolation=cv2.INTER_NEAREST))
-                    input_confs["stage%d" % (i + 1)].append(cv2.resize(p_conf, (width // (2 ** p), height // (2 ** p)),
+                    input_confs["stage%d" % (s + 1)].append(cv2.resize(p_conf, (width // (2 ** p), height // (2 ** p)),
                                                                        interpolation=cv2.INTER_NEAREST))
 
         #all

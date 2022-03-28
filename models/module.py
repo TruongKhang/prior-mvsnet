@@ -264,79 +264,74 @@ class FeatureNet(nn.Module):
             Conv2d(base_channels * 4, base_channels * 4, 3, 1, padding=1),
         )
 
-        self.out1 = nn.Conv2d(base_channels * 4, base_channels * 4, 1, bias=False)
-        self.out_channels = [4 * base_channels]
+        if num_stage == 3:
+            self.out1 = nn.Conv2d(base_channels * 4, base_channels * 4, 1, bias=False)
+            self.out_channels = [4 * base_channels]
 
-        if self.arch_mode == 'unet':
-            if num_stage == 3:
-                self.deconv1 = DeConv2dFuse(base_channels * 4, base_channels * 2, 3)
-                self.deconv2 = DeConv2dFuse(base_channels * 2, base_channels, 3)
-
-                self.out2 = nn.Conv2d(base_channels * 2, base_channels * 2, 1, bias=False)
-                self.out3 = nn.Conv2d(base_channels, base_channels, 1, bias=False)
-                self.out_channels.append(2 * base_channels)
-                self.out_channels.append(base_channels)
-
-            elif num_stage == 2:
-                self.deconv1 = DeConv2dFuse(base_channels * 4, base_channels * 2, 3)
-
-                self.out2 = nn.Conv2d(base_channels * 2, base_channels * 2, 1, bias=False)
-                self.out_channels.append(2 * base_channels)
-        elif self.arch_mode == "fpn":
             final_chs = base_channels * 4
-            if num_stage == 3:
-                self.inner1 = nn.Conv2d(base_channels * 2, final_chs, 1, bias=True)
-                self.inner2 = nn.Conv2d(base_channels * 1, final_chs, 1, bias=True)
+            self.inner1 = nn.Conv2d(base_channels * 2, final_chs, 1, bias=True)
+            self.inner2 = nn.Conv2d(base_channels * 1, final_chs, 1, bias=True)
 
-                self.out2 = nn.Conv2d(final_chs, base_channels * 2, 3, padding=1, bias=False)
-                self.out3 = nn.Conv2d(final_chs, base_channels, 3, padding=1, bias=False)
-                self.out_channels.append(base_channels * 2)
-                self.out_channels.append(base_channels)
+            self.out2 = nn.Conv2d(final_chs, base_channels * 2, 3, padding=1, bias=False)
+            self.out3 = nn.Conv2d(final_chs, base_channels, 3, padding=1, bias=False)
+            self.out_channels.append(base_channels * 2)
+            self.out_channels.append(base_channels)
 
-            elif num_stage == 2:
-                self.inner1 = nn.Conv2d(base_channels * 2, final_chs, 1, bias=True)
+        elif num_stage == 4:
+            self.conv3 = nn.Sequential(
+                Conv2d(base_channels * 4, base_channels * 8, 3, stride=2, padding=1),
+                Conv2d(base_channels * 8, base_channels * 8, 3, 1, padding=1),
+                Conv2d(base_channels * 8, base_channels * 8, 3, 1, padding=1),
+            )
 
-                self.out2 = nn.Conv2d(final_chs, base_channels, 3, padding=1, bias=False)
-                self.out_channels.append(base_channels)
+            self.out1 = nn.Conv2d(base_channels * 8, base_channels * 8, 1, bias=False)
+            self.out_channels = [8 * base_channels]
+
+            final_chs = base_channels * 8
+            self.inner1 = nn.Conv2d(base_channels * 4, final_chs, 1, bias=True)
+            self.inner2 = nn.Conv2d(base_channels * 2, final_chs, 1, bias=True)
+
+            self.out2 = nn.Conv2d(final_chs, base_channels * 4, 3, padding=1, bias=False)
+            self.out3 = nn.Conv2d(final_chs, base_channels * 2, 3, padding=1, bias=False)
+            self.out_channels.append(base_channels * 4)
+            self.out_channels.append(base_channels * 2)
+            self.out_channels.append(base_channels)
 
     def forward(self, x):
         conv0 = self.conv0(x)
         conv1 = self.conv1(conv0)
         conv2 = self.conv2(conv1)
 
-        intra_feat = conv2
         outputs = {}
-        out = self.out1(intra_feat)
-        outputs["stage1"] = out
-        if self.arch_mode == "unet":
-            if self.num_stage == 3:
-                intra_feat = self.deconv1(conv1, intra_feat)
-                out = self.out2(intra_feat)
-                outputs["stage2"] = out
+        if self.num_stage == 3:
+            intra_feat = conv2
+            out = self.out1(intra_feat)
+            outputs["stage1"] = out
 
-                intra_feat = self.deconv2(conv0, intra_feat)
-                out = self.out3(intra_feat)
-                outputs["stage3"] = out
+            intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner1(conv1)
+            out = self.out2(intra_feat)
+            outputs["stage2"] = out
 
-            elif self.num_stage == 2:
-                intra_feat = self.deconv1(conv1, intra_feat)
-                out = self.out2(intra_feat)
-                outputs["stage2"] = out
+            intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner2(conv0)
+            out = self.out3(intra_feat)
+            outputs["stage3"] = out
 
-        elif self.arch_mode == "fpn":
-            if self.num_stage == 3:
-                intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner1(conv1)
-                out = self.out2(intra_feat)
-                outputs["stage2"] = out
+        elif self.num_stage == 4:
+            conv3 = self.conv3(conv2)
 
-                intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner2(conv0)
-                out = self.out3(intra_feat)
-                outputs["stage3"] = out
+            intra_feat = conv3
+            out = self.out1(intra_feat)
+            outputs["stage1"] = out
 
-            elif self.num_stage == 2:
-                intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner1(conv1)
-                out = self.out2(intra_feat)
-                outputs["stage2"] = out
+            intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner1(conv2)
+            out = self.out2(intra_feat)
+            outputs["stage2"] = out
+
+            intra_feat = F.interpolate(intra_feat, scale_factor=2, mode="nearest") + self.inner2(conv1)
+            out = self.out3(intra_feat)
+            outputs["stage3"] = out
+
+            outputs["stage4"] = conv0
 
         return outputs
 
@@ -458,12 +453,16 @@ def get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, m
                                                                   dtype=cur_depth.dtype,
                                                                   requires_grad=False).reshape(1, -1, 1,
                                                                                                1) * new_interval.unsqueeze(1))
+    delta = (depth_range_samples - min_depth).clamp(min=0)
+    depth_range_samples = min_depth + delta
+    delta = (depth_range_samples - max_depth).clamp(max=0)
+    depth_range_samples = max_depth + delta
 
     return depth_range_samples #.clamp(min=min_depth, max=max_depth)
 
 
 def get_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, device, dtype, shape,
-                           max_depth=192.0, min_depth=0.0):
+                           max_depth=1000.0, min_depth=0.0):
     #shape: (B, H, W)
     #cur_depth: (B, H, W) or (B, D)
     #return depth_range_samples: (B, D, H, W)
