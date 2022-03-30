@@ -50,7 +50,7 @@ class DepthNet(nn.Module):
             # warped_volume = homo_warping(src_fea, src_proj[:, 2], ref_proj[:, 2], depth_values)
 
             var = (ref_volume - warped_volume) ** 2 # [B, C, D, H, W]
-            if stage_idx < 2: #est_vis is None:
+            if stage_idx < len(self.regress_cost): #est_vis is None:
                 rel_diff = (ref_depth - src_depths[:, src_idx, ...]).abs() / (ref_depth + 1e-10)
 
                 simple_cost_vol = self.regress_cost[stage_idx](var).squeeze(1) #torch.sum(var, dim=1)
@@ -121,7 +121,10 @@ class SeqProbMVSNet(nn.Module):
         if self.refine:
             self.refine_network = RefineNet(self.feature.out_channels[-1] + 2)
 
-        self.dnet = DepthNet(self.feature.out_channels[:2])
+        if self.num_stage == 3:
+            self.dnet = DepthNet(self.feature.out_channels[:2])
+        else:
+            self.dnet = DepthNet(self.feature.out_channels[:3])
 
         if use_prior:
             self.pr_net = PriorNet()

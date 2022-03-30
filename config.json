@@ -20,13 +20,13 @@
         "type": "DTULoader",
         "args":{
             "data_path": "/mnt/sdb/khang/dtu_dataset/train",
-            "data_list": "lists/dtu/subsub.txt",
+            "data_list": "lists/dtu/train.txt",
             "mode": "train",
-            "num_srcs": 3,
+            "num_srcs": 4,
             "num_depths": 192,
             "interval_scale": 1.06,
             "shuffle": true,
-            "batch_size": 4,
+            "batch_size": 3,
             "num_stages": 4,
             "load_prior": true
         }
