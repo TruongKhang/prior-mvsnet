@@ -262,7 +262,7 @@ class SeqProbMVSNet(nn.Module):
             total_dist = total_dist + dist
         total_dist /= 3
         final_conf = total_dist
-        feat_img = features[0]["stage%d" % self.num_stage].detach()
+        feat_img = features[0]["stage%d" % self.num_stage]
         # depth map refinement
         if self.refine:
             final_depth = (final_depth - depth_min) / depth_scale + 425
