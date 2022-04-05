@@ -70,7 +70,8 @@ class Trainer(BaseTrainer):
                 #     # m = (masks[stage] > 0.5).float()
                 #     warped_depths, warped_confs = homo_warping_2D(depths[stage], confs[stage], cam_params_stage)
                 #     prior[stage] = warped_depths / self.depth_scale, warped_confs
-            prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"]) #, depth_scale=d_interval)
+            prior = get_prior(depths["stage{}".format(num_stage)], confs["stage{}".format(num_stage)], 
+                              cam_params["stage{}".format(num_stage)], num_stages=num_stage) #, depth_scale=d_interval)
 
             self.optimizer.zero_grad()
             # for otm in self.optimizer:
@@ -158,8 +159,8 @@ class Trainer(BaseTrainer):
                     #     m = (masks[stage] > 0.5).float()
                     #     warped_depths, warped_confs = homo_warping_2D(depths[stage]*m, confs[stage]*m, cam_params_stage)
                     #     prior[stage] = warped_depths / self.depth_scale, warped_confs
-                prior = get_prior(depths["stage3"], confs["stage3"], cam_params["stage3"]) #,
-                                      #depth_scale=d_interval)
+                prior = get_prior(depths["stage{}".format(num_stage)], confs["stage{}".format(num_stage)], 
+                                  cam_params["stage{}".format(num_stage)], num_stages=num_stage)
 
                 outputs = self.model(imgs, cam_params, depth_values, prior=prior, depth_scale=d_interval.unsqueeze(1))
 

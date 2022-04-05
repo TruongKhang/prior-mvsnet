@@ -156,7 +156,7 @@ def masked_depth_conf(depths, confs, proj_matrices, thres_view=3, thres_conf=0.9
     return depths * all_masks, confs * all_masks
 
 
-def get_prior(depths, confs, project_matrices, depth_scale=1.0, thres_view=1, thresh_conf=0.1):
+def get_prior(depths, confs, project_matrices, num_stages=3, thres_view=1, thresh_conf=0.1):
     prior = {}
     src_depths, src_confs = depths[:, 1:, 0, ...], confs[:, 1:, 0, ...]
     src_proj_matrices = project_matrices[:, 1:, ...]
@@ -167,14 +167,17 @@ def get_prior(depths, confs, project_matrices, depth_scale=1.0, thres_view=1, th
     warped_depths, warped_confs = homo_warping_2D(depths, confs, project_matrices)
     # warped_depths /= depth_scale
 
-    scale = {"stage1": 4, "stage2": 2, "stage3": 1}
+    # scale = {"stage1": 4, "stage2": 2, "stage3": 1}
     H, W = warped_depths.size(3), warped_depths.size(4)
-    for stage in scale.keys():
-        warped_depths_stage = F.interpolate(warped_depths.squeeze(2), [H // scale[stage], W // scale[stage]],
+    # for stage in scale.keys():
+    for s in range(num_stages):
+        scale = 2 ** (num_stages - s - 1)
+        stage_key = "stage%d" % (s+1)
+        warped_depths_stage = F.interpolate(warped_depths.squeeze(2), [H // scale, W // scale],
                                             mode='nearest')
-        warped_confs_stage = F.interpolate(warped_confs.squeeze(2), [H // scale[stage], W // scale[stage]],
+        warped_confs_stage = F.interpolate(warped_confs.squeeze(2), [H // scale, W // scale],
                                            mode='nearest')
-        prior[stage] = warped_depths_stage.unsqueeze(2), warped_confs_stage.unsqueeze(2)
+        prior[stage_key] = warped_depths_stage.unsqueeze(2), warped_confs_stage.unsqueeze(2)
     return prior
 
 

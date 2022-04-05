@@ -1,6 +1,6 @@
 {
     "name": "SeqProbMVS",
-    "n_gpu": 1,
+    "n_gpu": 2,
     "dataset_name": "dtu",
 
     "arch": {
@@ -19,14 +19,14 @@
     "data_loader": {
         "type": "DTULoader",
         "args":{
-            "data_path": "/mnt/sdb/khang/dtu_dataset/train",
+            "data_path": "/mnt/sdb1/khang/dtu_dataset/train",
             "data_list": "lists/dtu/train.txt",
             "mode": "train",
             "num_srcs": 4,
             "num_depths": 192,
             "interval_scale": 1.06,
             "shuffle": true,
-            "batch_size": 3,
+            "batch_size": 4,
             "num_stages": 4,
             "load_prior": true
         }
@@ -46,7 +46,7 @@
     "lr_scheduler": {
         "type": "StepLR",
         "args": {
-            "step_size": 3,
+            "step_size": 5,
             "gamma": 0.5
         }
     },
@@ -62,7 +62,7 @@
         "scale2dtu": 2.65,
         "use_prior": true,
         "use_prior_loss": false,
-        "lrepochs": "3,6,9,12,15:2",
+        "lrepochs": "5,10,12:2",
         "dlossw": [0.5, 1.0, 2.0],
         "eval_freq": 1
     }
