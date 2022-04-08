@@ -13,7 +13,7 @@ np.random.seed(1234)
 class DTULoader(DataLoader):
 
     def __init__(self, data_path, data_list, mode, num_srcs, num_depths, interval_scale=1.0,
-                 shuffle=True, batch_size=1, num_stages=3, load_prior=True, fix_res=False, max_h=None, max_w=None):
+                 shuffle=True, batch_size=1, num_stages=3, load_prior=True, fix_res=False, max_h=None, max_w=None, valid_data_list=None):
         if (mode == 'train') or (mode == 'val'):
             self.mvs_dataset = DTUDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
                                           batch_size=batch_size, num_stages=num_stages, load_prior=load_prior)
@@ -38,7 +38,7 @@ class DTULoader(DataLoader):
 class BlendedLoader(DataLoader):
 
     def __init__(self, data_path, data_list, mode, num_srcs, num_depths, interval_scale=1.0,
-                 shuffle=True, batch_size=1, num_stages=3, load_prior=True, fix_res=False, max_h=None, max_w=None):
+                 shuffle=True, batch_size=1, num_stages=3, load_prior=True, fix_res=False, max_h=None, max_w=None, valid_data_list=None):
         if (mode == 'train') or (mode == 'val'):
             self.mvs_dataset = BlendedMVSDataset(data_path, data_list, mode, num_srcs, num_depths, interval_scale,
                                                  batch_size=batch_size, num_stages=num_stages, load_prior=load_prior)
