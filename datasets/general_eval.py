@@ -138,8 +138,8 @@ class MVSDataset(Dataset):
         imgs = []
         depth_values = None
         proj_matrices = []
-        input_depths = {"stage1": [], "stage2": [], "stage3": []}
-        input_confs = {"stage1": [], "stage2": [], "stage3": []}
+        input_depths = {"stage%d" % (s+1): [] for s in range(self.kwargs["num_stages"])}
+        input_confs = {"stage%d" % (s+1): [] for s in range(self.kwargs["num_stages"])}
         for i, vid in enumerate(view_ids):
             img_filename = os.path.join(self.datapath, '{}/images_post/{:0>8}.jpg'.format(scan, vid))
             if not os.path.exists(img_filename):
