@@ -26,7 +26,7 @@ def main(config):
     # setup data_loader instances
     init_kwags = {
         "data_path": config["data_loader"]["args"]["data_path"],
-        "data_list": "lists/dtu/val.txt",
+        "data_list": config["data_loader"]["args"]["valid_data_list"],
         "mode": "val",
         "num_srcs": 5,
         "num_depths": config["data_loader"]["args"]["num_depths"],
@@ -39,7 +39,7 @@ def main(config):
     valid_data_loader = getattr(module_data, config['data_loader']['type'])(**init_kwags)
 
     use_prior_loss = config["trainer"]["use_prior_loss"]
-    use_prior = config["trainer"]["use_prior"]
+    # use_prior = config["trainer"]["use_prior"]
 
     # get function handles of loss and metrics
     criterion = getattr(module_loss, config['loss'])
@@ -47,7 +47,7 @@ def main(config):
     if not use_prior_loss:
         print("Training Prior-MVSNet")
         # build models architecture, then print to console
-        model = config.init_obj('arch', module_arch, use_prior=use_prior)
+        model = config.init_obj('arch', module_arch)
         # logger.info(model)
         """print('Load pretrained model')
         checkpoint = torch.load('pretrained/full/blendedmvs.ckpt')

@@ -50,7 +50,7 @@
         "verbosity": 2,
         "logging_every": 100,
         "tensorboard": false,
-        "scale2dtu": 1.0,
+        "scale2dtu": 2.65,
         "use_prior": true,
         "use_prior_loss": true,
         "eval_freq": 1
