@@ -1,6 +1,6 @@
 {
     "name": "PriorNet",
-    "n_gpu": 1,
+    "n_gpu": 2,
     "dataset_name": "blended",
 
     "arch": {
@@ -13,14 +13,15 @@
     "data_loader": {
         "type": "BlendedLoader",
         "args":{
-            "data_path": "/mnt/sdb/khang/blendedmvs",
+            "data_path": "/mnt/sdb1/khang/blendedmvs",
             "data_list": "lists/blended/training_list.txt",
+            "valid_data_list": "lists/blended/validation_list.txt",
             "mode": "train",
             "num_srcs": 5,
             "num_depths": 192,
             "interval_scale": 1.0,
             "shuffle": true,
-            "batch_size": 8,
+            "batch_size": 6,
             "num_stages": 3,
             "load_prior": true
         }
@@ -28,7 +29,7 @@
     "optimizer": {
         "type": "Adam",
         "args":{
-            "lr": 0.0001,
+            "lr": 0.00002,
             "weight_decay": 0,
             "amsgrad": true
         }
@@ -37,7 +38,7 @@
     "lr_scheduler": {
         "type": "StepLR",
         "args": {
-            "step_size": 4,
+            "step_size": 10,
             "gamma": 0.5
         }
     },
@@ -49,7 +50,7 @@
         "verbosity": 2,
         "logging_every": 100,
         "tensorboard": false,
-        "scale2dtu": 1.5,
+        "scale2dtu": 2.65,
         "use_prior": true,
         "use_prior_loss": true,
         "eval_freq": 1

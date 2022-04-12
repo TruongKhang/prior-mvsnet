@@ -54,7 +54,7 @@ class PriornetTrainer(BaseTrainer):
             cam_params, depth_values = sample_cuda["proj_matrices"], sample_cuda["depth_values"]
 
             depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]]
-            prior = get_prior(depths[stage_key], confs[stage_key], cam_params[stage_key], thres_view=2) #, depth_scale=d_interval)
+            prior = get_prior(depths[stage_key], confs[stage_key], cam_params[stage_key], num_stages=self.num_stages, thres_view=1) #, depth_scale=d_interval)
             # ref_depth, ref_conf = depths[:, 0, ...], confs[:, 0, ...]
             w_src_depths, w_src_confs = prior[stage_key]
             self.optimizer.zero_grad()
@@ -62,7 +62,10 @@ class PriornetTrainer(BaseTrainer):
             # scale depth to DTU range, automatically compute depth scale
             depth_scale = (depth_values[:, 1] - depth_values[:, 0]) / self.scale2dtu
             depth_scale, depth_min = depth_scale.reshape(-1, 1, 1), depth_values[:, 0].reshape(-1, 1, 1)
-            w_src_depths = (w_src_depths - depth_min.unsqueeze(1).unsqueeze(1)) / depth_scale.unsqueeze(1).unsqueeze(1) + 425
+            w_src_depths = (w_src_depths - depth_min.unsqueeze(1).unsqueeze(1)) / depth_scale.unsqueeze(1).unsqueeze(1)
+            nonzero_mask = w_src_depths > 0
+            w_src_depths[~nonzero_mask] = 0
+            w_src_depths[nonzero_mask] += 425
 
             pred_depth, pred_conf = self.model(w_src_depths, w_src_confs)
 
@@ -110,14 +113,16 @@ class PriornetTrainer(BaseTrainer):
 
                 cam_params, depth_values = sample_cuda["proj_matrices"], sample_cuda["depth_values"]
                 depths, confs = sample_cuda["prior_depths"], sample_cuda["prior_confs"]  # [B,N,1,H,W]
-                prior = get_prior(depths[stage_key], confs[stage_key], cam_params[stage_key], thres_view=2)
+                prior = get_prior(depths[stage_key], confs[stage_key], cam_params[stage_key], num_stages=self.num_stages, thres_view=1)
 
                 w_src_depths, w_src_confs = prior[stage_key]
                 # scale depth to DTU range, automatically compute depth scale
                 depth_scale = (depth_values[:, 1] - depth_values[:, 0]) / self.scale2dtu
                 depth_scale, depth_min = depth_scale.reshape(-1, 1, 1), depth_values[:, 0].reshape(-1, 1, 1)
-                w_src_depths = (w_src_depths - depth_min.unsqueeze(1).unsqueeze(1)) / depth_scale.unsqueeze(
-                    1).unsqueeze(1) + 425
+                w_src_depths = (w_src_depths - depth_min.unsqueeze(1).unsqueeze(1)) / depth_scale.unsqueeze(1).unsqueeze(1)
+                nonzero_mask = w_src_depths > 0
+                w_src_depths[~nonzero_mask] = 0
+                w_src_depths[nonzero_mask] += 425
 
                 pred_depth, pred_conf = self.model(w_src_depths, w_src_confs)
 
@@ -126,17 +131,20 @@ class PriornetTrainer(BaseTrainer):
                 loss, _ = self.criterion(pred_depth, pred_conf, target)
 
                 depth_est = pred_depth.squeeze(1).detach()
-                ref_depth = (depths[stage_key][:, 0, ...].squeeze(1) - depth_min) / depth_scale + 425
+                ref_depth = (depths[stage_key][:, 0, ...].squeeze(1) - depth_min) / depth_scale
+                nonzero_mask = ref_depth > 0
+                ref_depth[~nonzero_mask] = 0
+                ref_depth[nonzero_mask] += 425
 
                 di = depth_scale[0].item()
                 scalar_outputs = {"loss": loss,
                                   "abs_depth_error": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5),
                                   "depth_error_input": AbsDepthError_metrics(ref_depth, depth_gt, mask > 0.5),
-                                  "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*2),
-                                  "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*4),
-                                  "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*8),
-                                  "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*14),
-                                  "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, di*20),
+                                  "thres2mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 2),
+                                  "thres4mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 4),
+                                  "thres8mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 8),
+                                  "thres14mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 14),
+                                  "thres20mm_error": Thres_metrics(depth_est, depth_gt, mask > 0.5, 20),
 
                                   # "thres2mm_error_input": Thres_metrics(ref_depth, depth_gt, mask > 0.5, di * 2),
                                   # "thres4mm_error_input": Thres_metrics(ref_depth, depth_gt, mask > 0.5, di * 4),
@@ -144,17 +152,17 @@ class PriornetTrainer(BaseTrainer):
                                   # "thres14mm_error_input": Thres_metrics(ref_depth, depth_gt, mask > 0.5, di * 14),
                                   # "thres20mm_error_input": Thres_metrics(ref_depth, depth_gt, mask > 0.5, di * 20),
 
-                                  "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, di*2.0]),
+                                  "thres2mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5, [0, 2.0]),
                                   "thres4mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                             [di*2.0, di*4.0]),
+                                                                             [2.0, 4.0]),
                                   "thres8mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                             [di*4.0, di*8.0]),
+                                                                             [4.0, 8.0]),
                                   "thres14mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                              [di*8.0, di*14.0]),
+                                                                              [8.0, 14.0]),
                                   "thres20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                              [di*14.0, di*20.0]),
+                                                                              [14.0, 20.0]),
                                   "thres>20mm_abserror": AbsDepthError_metrics(depth_est, depth_gt, mask > 0.5,
-                                                                               [di*20.0, 1e5]),
+                                                                               [20.0, 1e5]),
                                   }
 
                 if batch_idx % self.log_step == 0:

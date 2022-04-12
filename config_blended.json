@@ -1,6 +1,6 @@
 {
     "name": "SeqProbMVS",
-    "n_gpu": 1,
+    "n_gpu": 3,
     "dataset_name": "blendedmvs",
 
     "arch": {
@@ -13,20 +13,22 @@
             "cr_base_chs": [8, 8, 8],
             "num_stages": 3,
             "grad_method": "detach",
-            "pretrained_prior": "saved/models/PriorNet/0322_150812/checkpoint-epoch20.pth"
+            "pretrained_prior": "saved/models/PriorNet/0408_032243/checkpoint-epoch20.pth",
+            "pretrained_model": "pretrained/full/model_best.pth"
         }
     },
     "data_loader": {
         "type": "BlendedLoader",
         "args":{
-            "data_path": "/mnt/sdb/khang/blendedmvs",
+            "data_path": "/mnt/sdb1/khang/blendedmvs",
             "data_list": "lists/blended/training_list.txt",
+            "valid_data_list": "lists/blended/validation_list.txt",
             "mode": "train",
-            "num_srcs": 3,
+            "num_srcs": 4,
             "num_depths": 192,
             "interval_scale": 1.0,
             "shuffle": true,
-            "batch_size": 4,
+            "batch_size": 3,
             "num_stages": 3,
             "load_prior": true
         }
@@ -59,7 +61,7 @@
         "logging_every": 100,
         "early_stop": 20,
         "tensorboard": false,
-        "scale2dtu": 1.5,
+        "scale2dtu": 2.65,
         "use_prior": true,
         "use_prior_loss": false,
         "lrepochs": "5,10,12,14,16:2",

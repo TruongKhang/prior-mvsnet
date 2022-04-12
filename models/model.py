@@ -84,7 +84,7 @@ class DepthNet(nn.Module):
 class SeqProbMVSNet(nn.Module):
     def __init__(self, refine=False, ndepths=(48, 32, 8), depth_interals_ratio=(4, 2, 1), share_cr=False,
                  grad_method="detach", arch_mode="fpn", cr_base_chs=(8, 8, 8), num_stages=3, pretrained_prior=None,
-                 pretrained_mvs=None, use_prior=True):
+                 pretrained_mvs=None, pretrained_model=None):
         super(SeqProbMVSNet, self).__init__()
         self.refine = refine
         self.share_cr = share_cr
@@ -126,15 +126,25 @@ class SeqProbMVSNet(nn.Module):
         else:
             self.dnet = DepthNet(self.feature.out_channels[:3])
 
-        if use_prior:
-            self.pr_net = PriorNet()
-            if pretrained_prior is not None:
-                ckpt = torch.load(pretrained_prior)
-                self.pr_net.load_state_dict(ckpt['state_dict'])
-                for p in self.pr_net.parameters():
-                    p.requires_grad = False
+        self.pr_net = PriorNet()
+
+        if pretrained_model is not None:
+            print("Loading pretrained prior-mvsnet model")
+            ckpt = torch.load(pretrained_model)
+            self.load_state_dict(ckpt['state_dict'], strict=True)
+
+        if pretrained_prior is not None:
+            print("Loading pretrained PriorNet")
+            ckpt = torch.load(pretrained_prior)
+            new_state_dict = {}
+            for k, v in ckpt['state_dict'].items():
+                new_state_dict[k.replace('module.', '')] = v
+            self.pr_net.load_state_dict(new_state_dict)
+            for p in self.pr_net.parameters():
+                p.requires_grad = False
 
         if pretrained_mvs is not None:
+            print("Loading pretrained MVS-Net")
             ckpt = torch.load(pretrained_mvs)
             feat_dict, cost_reg_dict = {}, {}
             for k, v in ckpt['model'].items():
@@ -222,6 +232,7 @@ class SeqProbMVSNet(nn.Module):
                 prior_masks = prior_depths > 0
                 # normalize depth in to DTU range
                 prior_depths = (prior_depths - depth_min.unsqueeze(1)) / depth_scale.unsqueeze(1) + 425
+                prior_depths[prior_depths < 425] = 0.0
                 scaling_depth_values_stage = (depth_values_stage - depth_min) / depth_scale + 425
 
                 est_prior_depth, est_prior_conf = self.pr_net(prior_depths, prior_confs)

@@ -123,7 +123,7 @@ class BlendedMVSDataset(Dataset):
         depth_file = '{}.{}'.format(depth_file, filetype)
         conf_file = '{}.{}'.format(conf_file, filetype)
         if filetype == 'png':
-            prior_depth = np.array(Image.open(depth_file), dtype=np.float32) / 100
+            prior_depth = np.array(Image.open(depth_file), dtype=np.float32) / 1000
             prior_conf = np.array(Image.open(conf_file), dtype=np.float32) / 255
         else:
             prior_depth = np.array(read_pfm(depth_file)[0], dtype=np.float32)
@@ -183,6 +183,7 @@ class BlendedMVSDataset(Dataset):
                 prior_depth_file = os.path.join(self.datapath, 'priors/{}/depth_est/{:0>8}'.format(scan, vid))
                 prior_conf_file = os.path.join(self.datapath, 'priors/{}/confidence/{:0>8}'.format(scan, vid))
                 p_depth, p_conf = self.read_prior(prior_depth_file, prior_conf_file, filetype='png')
+                p_depth += depth_min
                 height, width = p_depth.shape
                 for s in range(self.kwargs["num_stages"]):
                     p = self.kwargs["num_stages"] - s - 1

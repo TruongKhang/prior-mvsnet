@@ -244,7 +244,9 @@ def save_scene_depth(testlist, config):
                 os.makedirs(img_filename.rsplit('/', 1)[0], exist_ok=True)
                 # save depth maps
                 if args.save_png: # only for blendedmvs and tanks & temples
-                    scale = 10 if args.dataset == 'dtu' else 100
+                    scale = 10 if args.dataset == 'dtu' else 1000
+                    depth_min = depth_values[0][0].cpu().numpy()
+                    depth_est -= depth_min
                     depth_est = cv2.resize(depth_est, (args.max_w, args.max_h))
                     depth_est = Image.fromarray((depth_est * scale).astype(np.uint16))
                     depth_est.save(depth_filename.replace('.pfm', '.png'))
@@ -434,7 +436,7 @@ if __name__ == '__main__':
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    # save_depth(testlist, config)
+    save_depth(testlist, config)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
     if args.filter_method == "normal":
