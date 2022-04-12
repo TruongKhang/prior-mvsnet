@@ -212,11 +212,11 @@ def save_scene_depth(testlist, config):
             # depth_scale = depth_scale_tt[scene]
 
             imgs, cam_params, depth_values = sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"]
-            d_interval = (depth_values[:, 1] - depth_values[:, 0]) / args.scale2dtu
+            d_interval = (depth_values[:, 1] - depth_values[:, 0]) / args.scale2dtu if args.dataset != 'dtu' else torch.ones_like(depth_values[:, 0])
             d_interval = d_interval.reshape(-1, 1, 1, 1)
             if args.load_prior:
-                depths, confs = sample_cuda["prior_depths"]["stage3"], sample_cuda["prior_confs"]["stage3"]  # [B,N,1,H,W]
-                prior = get_prior(depths, confs, cam_params["stage3"], thres_view=1, thresh_conf=0.1)
+                depths, confs = sample_cuda["prior_depths"]["stage{}".format(num_stage)], sample_cuda["prior_confs"]["stage{}".format(num_stage)]  # [B,N,1,H,W]
+                prior = get_prior(depths, confs, cam_params["stage{}".format(num_stage)], num_stages=num_stage, thres_view=1, thresh_conf=0.1)
                 outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=d_interval)
             else:
                 outputs = model(imgs, cam_params, sample_cuda["depth_values"])
