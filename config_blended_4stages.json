@@ -1,6 +1,6 @@
 {
     "name": "SeqProbMVS",
-    "n_gpu": 3,
+    "n_gpu": 2,
     "dataset_name": "blendedmvs",
 
     "arch": {
@@ -11,10 +11,10 @@
             "depth_interals_ratio": [3.0, 2.0, 1.0],
             "share_cr": false,
             "cr_base_chs": [8, 8, 8],
-            "num_stages": 3,
+            "num_stages": 4,
             "grad_method": "detach",
             "pretrained_prior": "saved/models/PriorNet/0408_032243/checkpoint-epoch20.pth",
-            "pretrained_model": "pretrained/full/model_best.pth"
+            "pretrained_model": "pretrained/full_4stages/model_best.ckpt"
         }
     },
     "data_loader": {
@@ -28,15 +28,15 @@
             "num_depths": 192,
             "interval_scale": 1.0,
             "shuffle": true,
-            "batch_size": 3,
-            "num_stages": 3,
+            "batch_size": 4,
+            "num_stages": 4,
             "load_prior": true
         }
     },
     "optimizer": {
         "type": "Adam",
         "args":{
-            "lr": 0.0001,
+            "lr": 0.0002,
             "weight_decay": 0,
             "amsgrad": true
         }
@@ -53,7 +53,7 @@
         }
     },
     "trainer": {
-        "epochs": 15,
+        "epochs": 30,
         "seq": true,
         "save_dir": "saved/",
         "save_period": 1,
@@ -64,7 +64,7 @@
         "scale2dtu": 1.0,
         "use_prior": true,
         "use_prior_loss": false,
-        "lrepochs": "5,10,12,14,16:2",
+        "lrepochs": "15:2",
         "dlossw": [0.5, 1.0, 2.0],
         "eval_freq": 1
     }

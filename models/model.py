@@ -131,7 +131,10 @@ class SeqProbMVSNet(nn.Module):
         if pretrained_model is not None:
             print("Loading pretrained prior-mvsnet model")
             ckpt = torch.load(pretrained_model)
-            self.load_state_dict(ckpt['state_dict'], strict=True)
+            new_state_dict = {}
+            for k, v in ckpt['state_dict'].items():
+                new_state_dict[k.replace('module.', '')] = v
+            self.load_state_dict(new_state_dict, strict=True)
 
         if pretrained_prior is not None:
             print("Loading pretrained PriorNet")
