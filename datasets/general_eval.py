@@ -93,16 +93,17 @@ class MVSDataset(Dataset):
         # read pfm depth file
         return np.array(read_pfm(filename)[0], dtype=np.float32)
 
-    def scale_mvs_input(self, img, intrinsics, max_w, max_h, base=32):
+    def scale_mvs_input(self, img, intrinsics, max_w, max_h):
+        base = 64 if self.kwargs["num_stages"] == 4 else 32
         h, w = img.shape[:2]
-        """if h > max_h or w > max_w:
+        if h > max_h or w > max_w:
             scale = 1.0 * max_h / h
             if scale * w > max_w:
                 scale = 1.0 * max_w / w
             new_w, new_h = scale * w // base * base, scale * h // base * base
         else:
-            new_w, new_h = 1.0 * w // base * base, 1.0 * h // base * base"""
-        new_h, new_w = max_h, max_w
+            new_w, new_h = 1.0 * w // base * base, 1.0 * h // base * base
+        # new_h, new_w = max_h, max_w
 
         scale_w = 1.0 * new_w / w
         scale_h = 1.0 * new_h / h
@@ -198,7 +199,7 @@ class MVSDataset(Dataset):
             # in_conf = np.array(read_pfm(in_conf_file)[0], dtype=np.float32)
             # in_conf = (in_conf * 255).astype(np.uint8)
             # in_conf = in_conf.astype(np.float32) / 255
-                p_depth, p_conf = self.read_prior(prior_depth_file, prior_conf_file, filetype='pfm', resize=(self.max_h, self.max_w))
+                p_depth, p_conf = self.read_prior(prior_depth_file, prior_conf_file, filetype='pfm', resize=(s_h, s_w))
                 height, width = p_depth.shape
                 for s in range(self.kwargs["num_stages"]):
                     p = self.kwargs["num_stages"] - s - 1

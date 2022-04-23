@@ -56,6 +56,7 @@ parser.add_argument('--max_h', type=int, default=864, help='testing max h')
 parser.add_argument('--max_w', type=int, default=1152, help='testing max w')
 parser.add_argument('--fix_res', action='store_true', help='scene all using same res')
 parser.add_argument('--scale2dtu', type=float, default=2.65,  help='scene all using same res')
+parser.add_argument('--prior_thresh_view', type=int, default=1,  help='number of view used for outlier filtering in PriorNet')
 
 parser.add_argument('--num_worker', type=int, default=4, help='depth_filer worker')
 parser.add_argument('--save_freq', type=int, default=20, help='save freq of local pcd')
@@ -216,7 +217,7 @@ def save_scene_depth(testlist, config):
             d_interval = d_interval.reshape(-1, 1, 1, 1)
             if args.load_prior:
                 depths, confs = sample_cuda["prior_depths"]["stage{}".format(num_stage)], sample_cuda["prior_confs"]["stage{}".format(num_stage)]  # [B,N,1,H,W]
-                prior = get_prior(depths, confs, cam_params["stage{}".format(num_stage)], num_stages=num_stage, thres_view=1, thresh_conf=0.1)
+                prior = get_prior(depths, confs, cam_params["stage{}".format(num_stage)], num_stages=num_stage, thres_view=args.prior_thresh_view, thresh_conf=0.1)
                 outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=d_interval)
             else:
                 outputs = model(imgs, cam_params, sample_cuda["depth_values"])
