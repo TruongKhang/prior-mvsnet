@@ -103,7 +103,8 @@ class MVSDataset(Dataset):
             new_w, new_h = scale * w // base * base, scale * h // base * base
         else:
             new_w, new_h = 1.0 * w // base * base, 1.0 * h // base * base
-        # new_h, new_w = max_h, max_w
+        if self.fix_res:
+            new_h, new_w = max_h, max_w
 
         scale_w = 1.0 * new_w / w
         scale_h = 1.0 * new_h / h
@@ -154,7 +155,7 @@ class MVSDataset(Dataset):
             # scale input
             img, intrinsics = self.scale_mvs_input(img, intrinsics, self.max_w, self.max_h)
 
-            if self.fix_res:
+            """if self.fix_res:
                 # using the same standard height or width in entire scene.
                 s_h, s_w = img.shape[:2]
                 self.fix_res = False
@@ -172,7 +173,8 @@ class MVSDataset(Dataset):
                 scale_w = 1.0 * s_w / c_w
                 img = cv2.resize(img, (s_w, s_h))
                 intrinsics[0, :] *= scale_w
-                intrinsics[1, :] *= scale_h
+                intrinsics[1, :] *= scale_h"""
+            s_h, s_w = img.shape[:2]
 
             imgs.append(img)
             # extrinsics, intrinsics

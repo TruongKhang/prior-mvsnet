@@ -202,9 +202,10 @@ def save_scene_depth(testlist, config):
     model.eval()
     # depth_scale_tt = {"Family": 0.0006, "Train": 0.0015, "Playground": 0.003, "Panther": 0.001, "M60": 0.001, "Lighthouse": 0.003, "Horse": 0.0006, "Francis": 0.0015}
     # depth_scale = args.depth_scale
-
+    time_stats = []
     with torch.no_grad():
         for batch_idx, sample in enumerate(test_data_loader):
+            # torch.cuda.synchronize()
             start_time = time.time()
             sample_cuda = tocuda(sample)
             num_stage = args.num_stages #len(config["arch"]["args"]["ndepths"])
@@ -221,7 +222,9 @@ def save_scene_depth(testlist, config):
                 outputs = model(imgs, cam_params, sample_cuda["depth_values"], prior=prior, depth_scale=d_interval)
             else:
                 outputs = model(imgs, cam_params, sample_cuda["depth_values"])
+            # torch.cuda.synchronize()
             end_time = time.time()
+            time_stats.append(end_time - start_time)
             outputs = tensor2numpy(outputs)
             del sample_cuda
             filenames = sample["filename"]
@@ -266,6 +269,7 @@ def save_scene_depth(testlist, config):
 
     torch.cuda.empty_cache()
     gc.collect()
+    print("average time for each frame: ", sum(time_stats[1:]) / (len(time_stats) - 1))
 
 
 class TTDataset(Dataset):
