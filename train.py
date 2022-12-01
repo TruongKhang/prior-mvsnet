@@ -28,7 +28,7 @@ def main(config):
         "data_path": config["data_loader"]["args"]["data_path"],
         "data_list": config["data_loader"]["args"]["valid_data_list"],
         "mode": "val",
-        "num_srcs": 5,
+        "num_srcs": 7,
         "num_depths": config["data_loader"]["args"]["num_depths"],
         "interval_scale": config["data_loader"]["args"]["interval_scale"],
         "shuffle": False,

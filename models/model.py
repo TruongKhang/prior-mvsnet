@@ -1,6 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
+import os
+
 from .module import depth_regression, conf_regression, CostRegNet, FeatureNet, RefineNet, get_depth_range_samples
 from .utils.warping import homo_warping_3D, homo_warping_2D, masked_depth_conf
 from .prior_net import PriorNet, UNet
@@ -17,7 +22,7 @@ class DepthNet(nn.Module):
                                   nn.Sigmoid(), nn.Threshold(0.05, 0.0))
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
-                log=False, est_vis=None, prior_info=None, stage_idx=0):
+                log=False, est_vis=None, prior_info=None, stage_idx=0, img_idx=0):
 
         assert len(features) == proj_matrices.size(1), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
@@ -59,6 +64,22 @@ class DepthNet(nn.Module):
                 mean_cost = torch.mean(simple_cost_vol, dim=1, keepdim=True)
                 feats = torch.cat((max_cost, mean_cost, rel_diff, ref_mask.float(), src_masks[:, src_idx, ...].float()), dim=1)
                 vis_map = self.unet(feats)
+                if stage_idx == (len(self.regress_cost) - 1):
+                    vis_map_png = (vis_map.cpu().numpy() * 1000).astype(np.uint16)
+                    F_occ = (rel_diff.cpu().numpy() * 10000).astype(np.uint16)
+                    F_occ_conf = src_masks[:, src_idx, ...] #torch.min(ref_mask, src_masks[:, src_idx, ...])
+                    F_occ_conf = (F_occ_conf.cpu().numpy() * 100).astype(np.uint16)
+                    if not os.path.exists("vis_features/%d" % img_idx):
+                        os.makedirs("vis_features/%d" % img_idx)
+                    #plt.imsave("vis_features/%d/vis_map_color%d.png" % (img_idx, src_idx), vis_map_png[0][0])
+                    plt.imsave("vis_features/%d/f_occ_color%d.png" % (img_idx, src_idx), F_occ[0][0])
+                    plt.imsave("vis_features/%d/f_occ_conf_color%d.png" % (img_idx, src_idx), F_occ_conf[0][0])
+                    #vis_map_png = Image.fromarray(vis_map_png[0][0])
+                    #vis_map_png.save("vis_features/%d/vis_map%d.png" % (img_idx, src_idx))
+                    F_occ_png = Image.fromarray(F_occ[0][0])
+                    F_occ_png.save("vis_features/%d/f_occ%d.png" % (img_idx, src_idx))
+                    F_occ_conf_png = Image.fromarray(F_occ_conf[0][0])
+                    F_occ_conf_png.save("vis_features/%d/f_occ_conf%d.png" % (img_idx, src_idx))
             else:
                 vis_map = est_vis[:, src_idx, ...]
             vis_maps.append(vis_map.detach())
@@ -170,7 +191,7 @@ class SeqProbMVSNet(nn.Module):
         log_dist_masked = F.log_softmax(log_dist_masked, dim=1)
         return log_dist_masked
 
-    def forward(self, imgs, proj_matrices, depth_values, prior=None, depth_scale=1.0, src_prior=None, gt_vis=None):
+    def forward(self, imgs, proj_matrices, depth_values, prior=None, depth_scale=1.0, src_prior=None, gt_vis=None, img_idx=0):
 
         depth_min = depth_values[:, [0]].unsqueeze(-1).unsqueeze(-1)
         depth_max = depth_values[:, [-1]].unsqueeze(-1).unsqueeze(-1)
@@ -238,18 +259,18 @@ class SeqProbMVSNet(nn.Module):
                 prior_depths[prior_depths < 425] = 0.0
                 scaling_depth_values_stage = (depth_values_stage - depth_min) / depth_scale + 425
 
-                est_prior_depth, est_prior_conf = self.pr_net(prior_depths, prior_confs)
+                est_prior_depth, est_prior_conf, prop_prior_depths, prop_prior_confs = self.pr_net(prior_depths, prior_confs)
                 log_prior = self.get_log_prior(est_prior_depth, est_prior_conf, scaling_depth_values_stage) # / depth_scale)
             else:
                 log_prior = 0.0
                 est_prior_depth, est_prior_conf = None, None
 
-            all_prior_depths = est_prior_depth.detach(), prior_depths #prior[stage_name][0]
-            all_prior_masks = (est_prior_conf.detach() > 0.1), prior_masks #(prior[stage_name][0] > 0)
+            all_prior_depths = est_prior_depth.detach(), prop_prior_depths #prior[stage_name][0]
+            all_prior_masks = est_prior_conf.detach(), prop_prior_confs #(prior[stage_name][0] > 0)
             log_likelihood, vis_maps = self.dnet(features_stage, proj_matrices_stage, depth_values=depth_values_stage,
                                        num_depth=self.ndepths[stage_idx],
                                        cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
-                                       log=True, est_vis=vis_maps, prior_info=(all_prior_depths, all_prior_masks), stage_idx=stage_idx)
+                                       log=True, est_vis=vis_maps, prior_info=(all_prior_depths, all_prior_masks), stage_idx=stage_idx, img_idx=img_idx)
  
             log_posterior = log_likelihood + log_prior
             posterior_vol = F.softmax(log_posterior, dim=1)

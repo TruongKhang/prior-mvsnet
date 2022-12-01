@@ -15,7 +15,7 @@
         "args":{
             "data_path": "/mnt/sdb/khang/dtu_dataset/train",
             "data_list": "lists/dtu/train.txt",
-            "valid_data_list": "lists/dtu/val.txt",
+            "valid_data_list": "lists/dtu/test.txt",
             "mode": "train",
             "num_srcs": 4,
             "num_depths": 192,

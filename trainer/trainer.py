@@ -46,7 +46,7 @@ class Trainer(BaseTrainer):
 
         # self.data_loader.dataset.generate_indices()
         # training
-        for batch_idx, sample in enumerate(self.data_loader):
+        """for batch_idx, sample in enumerate(self.data_loader):
             start_time = time.time()
 
             # modified from the original by Khang
@@ -108,7 +108,7 @@ class Trainer(BaseTrainer):
                         epoch, self.epochs, batch_idx, len(self.data_loader),
                         self.optimizer.param_groups[0]["lr"], loss, depth_loss, time.time() - start_time))
             # del scalar_outputs, image_outputs
-            self.train_metrics.update({"loss": loss.item(), "depth_loss": depth_loss.item()}, n=depth_gt.size(0))
+            self.train_metrics.update({"loss": loss.item(), "depth_loss": depth_loss.item()}, n=depth_gt.size(0))"""
 
         # if "prior" in self.lr_scheduler.keys():
         #     self.lr_scheduler["prior"].step()
@@ -162,7 +162,7 @@ class Trainer(BaseTrainer):
                 prior = get_prior(depths["stage{}".format(num_stage)], confs["stage{}".format(num_stage)], 
                                   cam_params["stage{}".format(num_stage)], num_stages=num_stage)
 
-                outputs = self.model(imgs, cam_params, depth_values, prior=prior, depth_scale=d_interval.unsqueeze(1))
+                outputs = self.model(imgs, cam_params, depth_values, prior=prior, depth_scale=d_interval.unsqueeze(1), img_idx=batch_idx)
 
                 loss, depth_loss = self.criterion(outputs, depth_gt_ms, mask_ms,
                                                   dlossw=self.config["trainer"]["dlossw"],

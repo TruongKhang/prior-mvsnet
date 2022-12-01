@@ -110,7 +110,7 @@ class PriorNet(nn.Module):
         refined_depth = self.depth_refinement(avg_depth)
         refined_conf = self.conf_refinement(avg_conf)
 
-        return refined_depth, refined_conf
+        return refined_depth, refined_conf, prop_depths, prop_confs
 
 
 class ResidualBlock(nn.Module):
