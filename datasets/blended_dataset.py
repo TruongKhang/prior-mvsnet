@@ -62,8 +62,8 @@ class BlendedMVSDataset(Dataset):
         extrinsics = np.fromstring(' '.join(lines[1:5]), dtype=np.float32, sep=' ').reshape((4, 4))
         # intrinsics: line [7-10), 3x3 matrix
         intrinsics = np.fromstring(' '.join(lines[7:10]), dtype=np.float32, sep=' ').reshape((3, 3))
-        intrinsics[0, 2] -= 64.0
-        intrinsics[1, 2] -= 32.0
+        #intrinsics[0, 2] -= 64.0
+        #intrinsics[1, 2] -= 32.0
         # intrinsics[:2, :] /= 4.0
         # depth_min & depth_interval: line 11
         depth_min = float(lines[11].split()[0])
@@ -80,7 +80,7 @@ class BlendedMVSDataset(Dataset):
 
     def prepare_img(self, img):
         h, w = img.shape[:2]
-        target_h, target_w = 512, 640
+        target_h, target_w = 576, 768 #512, 640
         start_h, start_w = (h - target_h)//2, (w - target_w)//2
         img_crop = img[start_h: start_h + target_h, start_w: start_w + target_w]
         return img_crop

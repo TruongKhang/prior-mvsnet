@@ -13,16 +13,15 @@
             "cr_base_chs": [8, 8, 8],
             "num_stages": 3,
             "grad_method": "detach",
-            "pretrained_prior": "saved/models/PriorNet/0408_032243/checkpoint-epoch20.pth",
-            "pretrained_model": "pretrained/full/model_best.pth"
+            "pretrained_model": "pretrained/full/blendedmvs/model_best_v2.ckpt"
         }
     },
     "data_loader": {
         "type": "BlendedLoader",
         "args":{
-            "data_path": "/mnt/sdb1/khang/blendedmvs",
+            "data_path": "/mnt/sdb/khang/blendedmvs",
             "data_list": "lists/blended/training_list.txt",
-            "valid_data_list": "lists/blended/validation_list.txt",
+            "valid_data_list": "lists/blended/subsub.txt",
             "mode": "train",
             "num_srcs": 4,
             "num_depths": 192,
@@ -53,7 +52,7 @@
         }
     },
     "trainer": {
-        "epochs": 15,
+        "epochs": 1,
         "seq": true,
         "save_dir": "saved/",
         "save_period": 1,
